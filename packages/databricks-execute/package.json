@@ -1,0 +1,29 @@
+{
+    "name": "@databricks/databricks-execute",
+    "version": "2.10.3",
+    "private": true,
+    "description": "CLI to sync and execute a local file on Databricks (mirrors VS Code extension runFile behavior).",
+    "license": "LicenseRef-LICENSE",
+    "bin": {
+        "databricks-execute": "dist/cli.js"
+    },
+    "scripts": {
+        "build": "node scripts/build.js",
+        "watch": "node scripts/build.js --watch",
+        "clean": "rm -rf dist node_modules",
+        "fix": "eslint src --ext ts --fix && prettier src README.md package.json tsconfig.json --write",
+        "test:lint": "eslint src --ext ts && prettier src README.md package.json tsconfig.json -c",
+        "test:unit": "true",
+        "test": "yarn run test:lint && yarn run test:unit"
+    },
+    "dependencies": {
+        "@databricks/databricks-sdk": "file:../../vendor/databricks-sdk.tgz"
+    },
+    "devDependencies": {
+        "@types/node": "^20.10.4",
+        "esbuild": "^0.25.0",
+        "eslint": "^8.55.0",
+        "prettier": "^3.1.1",
+        "typescript": "^5.5.0"
+    }
+}
