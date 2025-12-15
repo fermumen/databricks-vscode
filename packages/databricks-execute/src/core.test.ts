@@ -4,7 +4,10 @@ import test from "node:test";
 import {
     coalesce,
     compileBootstrapCommand,
+    detectNotebookType,
     ensureValidEnvVars,
+    extractNotebookTextOutputFromExportedHtml,
+    htmlToPlainText,
     isLikelyClusterId,
     localPathToRemoteWorkspacePath,
     normalizeHost,
@@ -128,4 +131,84 @@ test("compileBootstrapCommand injects argv and env", () => {
 test("isLikelyClusterId matches common cluster id format", () => {
     assert.equal(isLikelyClusterId("0123-456789-abcde123"), true);
     assert.equal(isLikelyClusterId("My Cluster"), false);
+});
+
+test("detectNotebookType detects ipynb and Databricks source notebooks", () => {
+    assert.equal(detectNotebookType("ipynb", undefined), "IPYNB");
+    assert.equal(detectNotebookType(".ipynb", undefined), "IPYNB");
+    assert.equal(
+        detectNotebookType("py", "# Databricks notebook source"),
+        "PY_DBNB"
+    );
+    assert.equal(
+        detectNotebookType("sql", "-- Databricks notebook source"),
+        "OTHER_DBNB"
+    );
+    assert.equal(detectNotebookType("py", "print('x')"), undefined);
+    assert.equal(
+        detectNotebookType("py", "\uFEFF# Databricks notebook source"),
+        "PY_DBNB"
+    );
+});
+
+test("htmlToPlainText strips tags and decodes entities", () => {
+    assert.equal(
+        htmlToPlainText(
+            "<div>Hello&nbsp;<b>world</b><br/>Line2 &lt;tag&gt;</div>"
+        ),
+        "Hello world\nLine2 <tag>"
+    );
+    assert.equal(htmlToPlainText("A&#10;B"), "A\nB");
+});
+
+test("extractNotebookTextOutputFromExportedHtml extracts stdout/stderr/error", () => {
+    const model = {
+        version: "NotebookV1",
+        commands: [
+            {
+                results: {
+                    data: [
+                        {type: "ansi", name: "stdout", data: "hello\n"},
+                        {type: "ansi", name: "stderr", data: "warn\n"},
+                    ],
+                },
+            },
+            {error: "Traceback...\n"},
+        ],
+    };
+    const encoded = Buffer.from(
+        encodeURIComponent(JSON.stringify(model)),
+        "utf8"
+    ).toString("base64");
+    const html = `<script>var __DATABRICKS_NOTEBOOK_MODEL = '${encoded}';</script>`;
+
+    const out = extractNotebookTextOutputFromExportedHtml(html);
+    assert.ok(out);
+    assert.equal(out.stdout, "hello");
+    assert.equal(out.stderr, "warn");
+    assert.equal(out.error, "Traceback...");
+});
+
+test("extractNotebookTextOutputFromExportedHtml includes mimeBundle text/plain results", () => {
+    const model = {
+        version: "NotebookV1",
+        commands: [
+            {
+                results: {
+                    /* eslint-disable @typescript-eslint/naming-convention */
+                    data: [{type: "mimeBundle", data: {"text/plain": "2"}}],
+                    /* eslint-enable @typescript-eslint/naming-convention */
+                },
+            },
+        ],
+    };
+    const encoded = Buffer.from(
+        encodeURIComponent(JSON.stringify(model)),
+        "utf8"
+    ).toString("base64");
+    const html = `<script>var __DATABRICKS_NOTEBOOK_MODEL = '${encoded}';</script>`;
+
+    const out = extractNotebookTextOutputFromExportedHtml(html);
+    assert.ok(out);
+    assert.equal(out.stdout, "2");
 });

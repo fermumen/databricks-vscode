@@ -6,6 +6,8 @@ Runs a local Python file on a Databricks cluster, mimicking the Databricks VS Co
 2. Executes the file on the configured cluster via the Command Execution API
 3. Parses remote stack traces and rewrites `/Workspace/...` paths back to local paths
 
+For notebooks (`.ipynb` or “Databricks notebook source” files like `example.py`), it runs them as a workflow (Jobs API notebook task) to match the VS Code “Run File as Workflow” behavior.
+
 ## Install / build (repo-local)
 
 ```bash
@@ -42,6 +44,20 @@ npm install -g ./packages/databricks-execute
 ```bash
 databricks-execute path/to/local/file.py -- arg1 arg2
 ```
+
+### Notebook mode
+
+If the input file is:
+
+-   an `.ipynb`, or
+-   a `*.py`/`*.sql`/`*.scala`/`*.r` file whose first line is `Databricks notebook source`
+
+then `databricks-execute` runs it as a **workflow notebook task** instead of using the Command Execution API.
+
+Notes:
+
+-   Positional args (`-- arg1 arg2`) and `--env KEY=VALUE` are only supported in Command Execution mode (plain `.py` files).
+-   Notebook output is printed by extracting text stdout/stderr (and tracebacks) from the exported run. For rich outputs (tables/plots/HTML), open the run URL in a browser.
 
 By default it uses `bundle.yml` / `databricks.yml` (via `databricks bundle validate`) for `workspace.host`, workspace file path, and cluster id.
 

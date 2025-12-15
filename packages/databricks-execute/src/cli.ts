@@ -14,12 +14,16 @@ import {
 
 import bootstrapTemplate from "../../databricks-vscode/resources/python/bootstrap.py";
 import {parseErrorResult} from "../../databricks-vscode/src/run/ErrorParser";
-import {Cluster} from "../../databricks-vscode/src/sdk-extensions/Cluster";
+import {Cluster, WorkflowRun} from "../../databricks-vscode/src/sdk-extensions";
 import {
     coalesce,
     compileBootstrapCommand,
+    detectNotebookType,
+    extractNotebookTextOutputFromExportedHtml,
+    htmlToPlainText,
     localPathToRemoteWorkspacePath,
     normalizeHost,
+    normalizeWorkspacePath,
     parseDotConfig,
     remoteWorkspacePathToLocalPath,
     workspacePrefixedPath,
@@ -75,7 +79,11 @@ function printHelp() {
     console.log(
         [
             "Usage:",
-            "  databricks-execute <path/to/file.py> [options] -- [script args...]",
+            "  databricks-execute <path/to/file.py|file.ipynb> [options] [-- script args...]",
+            "",
+            "Notes:",
+            "  - .ipynb and 'Databricks notebook source' files run as workflow notebooks (Jobs API).",
+            "  - Positional args and --env are only supported for plain .py files.",
             "",
             "Options:",
             "  --config <path>        Path to .config file (default: <bundleRoot>/.config)",
@@ -203,6 +211,21 @@ function nowPrefix(message: string) {
     console.log(`${new Date().toLocaleString()} - ${message}`);
 }
 
+async function readFirstLine(filePath: string): Promise<string | undefined> {
+    const fh = await fs.open(filePath, "r");
+    try {
+        const buf = Buffer.alloc(4096);
+        const {bytesRead} = await fh.read(buf, 0, buf.length, 0);
+        if (bytesRead <= 0) {
+            return undefined;
+        }
+        const chunk = buf.toString("utf8", 0, bytesRead);
+        return chunk.split(/\r?\n/u, 1)[0];
+    } finally {
+        await fh.close();
+    }
+}
+
 async function runDatabricksCli(
     args: string[],
     options: {cwd: string; env: Record<string, string>; inherit?: boolean}
@@ -285,6 +308,15 @@ async function main() {
     } catch {
         fail(`File not found: ${absoluteFilePath}`);
     }
+
+    const fileExt = path.extname(absoluteFilePath).replace(/^\./u, "");
+    const firstLine =
+        fileExt &&
+        fileExt !== "ipynb" &&
+        ["py", "scala", "sql", "r"].includes(fileExt.toLowerCase())
+            ? await readFirstLine(absoluteFilePath)
+            : undefined;
+    const notebookType = detectNotebookType(fileExt, firstLine);
 
     const bundleRoot =
         (await findBundleRoot(path.dirname(absoluteFilePath))) ??
@@ -503,6 +535,161 @@ async function main() {
         remoteRootPath
     );
     const remoteRepoRoot = workspacePrefixedPath(remoteRootPath);
+
+    if (notebookType) {
+        if (scriptArgs.length > 0) {
+            fail(
+                "Notebook mode does not support positional args. Use widgets/base_parameters in the notebook instead."
+            );
+        }
+        if (Object.keys(options.env).length > 0) {
+            fail(
+                "Notebook mode does not support --env. Use cluster init scripts or set env vars within the notebook instead."
+            );
+        }
+
+        const remoteNotebookPath = normalizeWorkspacePath(
+            remotePythonFile
+        ).replace(/\.(py|ipynb|scala|r|sql)$/iu, "");
+
+        nowPrefix(
+            `Running ${path.relative(
+                bundleRoot,
+                absoluteFilePath
+            )} as workflow notebook (${notebookType}) ...`
+        );
+
+        /* eslint-disable @typescript-eslint/naming-convention */
+        const run = await WorkflowRun.submitRun(apiClient, {
+            tasks: [
+                {
+                    task_key: "databricks_execute_notebook",
+                    notebook_task: {
+                        notebook_path: remoteNotebookPath,
+                        base_parameters: {},
+                    },
+                    existing_cluster_id: cluster.id,
+                },
+            ],
+        });
+        /* eslint-enable @typescript-eslint/naming-convention */
+
+        if (run.runPageUrl) {
+            nowPrefix(`Run URL: ${run.runPageUrl}`);
+        } else if (run.details.run_id !== undefined) {
+            nowPrefix(`Run ID: ${run.details.run_id}`);
+        }
+
+        let lastState: string | undefined;
+        await run.wait((state) => {
+            if (state !== lastState) {
+                lastState = state;
+                nowPrefix(`Run state: ${state}`);
+            }
+        }, cts.token);
+
+        const resultState = run.state?.result_state;
+        const stateMessage = run.state?.state_message;
+        if (resultState) {
+            nowPrefix(`Run result: ${resultState}`);
+        }
+        if (stateMessage) {
+            nowPrefix(`Run message: ${stateMessage}`);
+        }
+
+        let printedOutput = false;
+        let printedError = false;
+        try {
+            const exported = await run.export();
+            const views = exported.views ?? [];
+            const view = views.find((v) => (v as any)?.content) as
+                | {content?: string; name?: string}
+                | undefined;
+            if (view?.content) {
+                const extracted = extractNotebookTextOutputFromExportedHtml(
+                    view.content
+                );
+                if (extracted) {
+                    if (extracted.stdout) {
+                        // eslint-disable-next-line no-console
+                        process.stdout.write(
+                            extracted.stdout.endsWith("\n")
+                                ? extracted.stdout
+                                : `${extracted.stdout}\n`
+                        );
+                        printedOutput = true;
+                    }
+                    if (extracted.stderr) {
+                        // eslint-disable-next-line no-console
+                        process.stderr.write(
+                            extracted.stderr.endsWith("\n")
+                                ? extracted.stderr
+                                : `${extracted.stderr}\n`
+                        );
+                        printedOutput = true;
+                        printedError = true;
+                    }
+                    if (extracted.error) {
+                        // eslint-disable-next-line no-console
+                        process.stderr.write(
+                            extracted.error.endsWith("\n")
+                                ? extracted.error
+                                : `${extracted.error}\n`
+                        );
+                        printedOutput = true;
+                        printedError = true;
+                    }
+                } else {
+                    const text = htmlToPlainText(view.content);
+                    if (text) {
+                        // eslint-disable-next-line no-console
+                        process.stdout.write(`${text}\n`);
+                        printedOutput = true;
+                    }
+                }
+            }
+        } catch {}
+
+        try {
+            const output = await run.getOutput();
+            const notebookOutput = (output as any)?.notebook_output?.result as
+                | string
+                | undefined;
+            const notebookTruncated = Boolean(
+                (output as any)?.notebook_output?.truncated
+            );
+            if (!printedOutput && notebookOutput) {
+                // eslint-disable-next-line no-console
+                process.stdout.write(
+                    notebookTruncated
+                        ? `${notebookOutput}\n\n[Notebook output truncated]\n`
+                        : `${notebookOutput}\n`
+                );
+                printedOutput = true;
+            }
+            if (!printedError && output.error) {
+                // eslint-disable-next-line no-console
+                console.error(output.error);
+                printedError = true;
+            }
+            if (!printedError && (output as any).error_trace) {
+                // eslint-disable-next-line no-console
+                console.error((output as any).error_trace);
+                printedError = true;
+            }
+        } catch {}
+
+        const exitCode =
+            cts.token.isCancellationRequested &&
+            (resultState === "CANCELED" || resultState === "CANCELLED")
+                ? 130
+                : resultState === "SUCCESS"
+                  ? 0
+                  : 1;
+        nowPrefix(`Done (took ${Date.now() - startedAt}ms)`);
+        process.exitCode = exitCode;
+        return;
+    }
 
     nowPrefix(`Creating execution context on cluster ${cluster.id} ...`);
     const executionContext = await cluster.createExecutionContext("python");
