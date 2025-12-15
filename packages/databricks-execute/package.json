@@ -1,6 +1,6 @@
 {
     "name": "@fermumen/databricks-execute",
-    "version": "2.10.3",
+    "version": "2.10.6",
     "description": "CLI to sync and execute a local file on Databricks (mirrors VS Code extension runFile behavior).",
     "license": "LicenseRef-LICENSE",
     "homepage": "https://github.com/fermumen/databricks-vscode/tree/main/packages/databricks-execute",
@@ -14,9 +14,7 @@
     "publishConfig": {
         "access": "public"
     },
-    "bin": {
-        "databricks-execute": "dist/cli.js"
-    },
+    "bin": "dist/cli.js",
     "files": [
         "dist",
         "LICENSE",
@@ -36,7 +34,10 @@
         "test": "yarn run test:lint && yarn run test:unit"
     },
     "dependencies": {
-        "@databricks/databricks-sdk": "^0.10.0"
+        "google-auth-library": "^10.4.1",
+        "ini": "^5.0.0",
+        "reflect-metadata": "^0.2.2",
+        "semver": "^7.7.2"
     },
     "devDependencies": {
         "@types/node": "^20.10.4",

@@ -20,13 +20,19 @@ node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute build
 ### From npm (one-line install)
 
 ```bash
-npm install -g @fermumen/databricks-execute
+npm install -g @fermumen/databricks-execute@latest
 ```
 
 Then run:
 
 ```bash
 databricks-execute path/to/local/file.py -- arg1 arg2
+```
+
+Upgrade to latest:
+
+```bash
+npm install -g @fermumen/databricks-execute@latest
 ```
 
 ### Local (recommended for this repo)
@@ -45,7 +51,7 @@ node .yarn/releases/yarn-3.2.1.cjs databricks-execute path/to/local/file.py -- a
 
 ### Global
 
-From this repo root:
+Install the local build from this repo root:
 
 ```bash
 npm install -g ./packages/databricks-execute
