@@ -15,6 +15,16 @@ import {
 import bootstrapTemplate from "../../databricks-vscode/resources/python/bootstrap.py";
 import {parseErrorResult} from "../../databricks-vscode/src/run/ErrorParser";
 import {Cluster} from "../../databricks-vscode/src/sdk-extensions/Cluster";
+import {
+    coalesce,
+    compileBootstrapCommand,
+    localPathToRemoteWorkspacePath,
+    normalizeHost,
+    parseDotConfig,
+    remoteWorkspacePathToLocalPath,
+    workspacePrefixedPath,
+    isLikelyClusterId,
+} from "./core";
 
 let activeDatabricksCliProcess: ChildProcess | undefined;
 
@@ -163,43 +173,6 @@ function parseArgs(argv: string[]): {
     return {filePath, options, scriptArgs};
 }
 
-function parseDotConfig(contents: string): Record<string, string> {
-    const out: Record<string, string> = {};
-
-    for (const rawLine of contents.split(/\r?\n/u)) {
-        const line = rawLine.trim();
-        if (line.length === 0 || line.startsWith("#")) {
-            continue;
-        }
-
-        const idx = line.indexOf("=");
-        if (idx <= 0) {
-            continue;
-        }
-
-        const key = line.slice(0, idx).trim();
-        let value = line.slice(idx + 1).trim();
-        if (
-            (value.startsWith('"') && value.endsWith('"')) ||
-            (value.startsWith("'") && value.endsWith("'"))
-        ) {
-            value = value.slice(1, -1);
-        }
-        out[key] = value;
-    }
-
-    return out;
-}
-
-function coalesce(...values: Array<string | undefined>): string | undefined {
-    for (const v of values) {
-        if (v !== undefined && v !== "") {
-            return v;
-        }
-    }
-    return undefined;
-}
-
 async function findBundleRoot(startDir: string): Promise<string | undefined> {
     const bundleFiles = [
         "databricks.yml",
@@ -270,108 +243,6 @@ async function runDatabricksCli(
             });
         });
     });
-}
-
-function normalizeHost(host: string): string {
-    if (!/^https?:\/\//iu.test(host)) {
-        return `https://${host}`;
-    }
-    return host;
-}
-
-function ensureValidEnvVars(envVars: Record<string, string>) {
-    for (const key of Object.keys(envVars)) {
-        if (!/^[a-zA-Z_]{1,}[a-zA-Z0-9_]*$/u.test(key)) {
-            fail(
-                `Invalid environment variable ${key}: Only letters, digits and '_' are allowed.`
-            );
-        }
-    }
-}
-
-function escapePythonString(str: string): string {
-    return str.replace(/\\/gu, "\\\\").replace(/'/gu, "\\'");
-}
-
-function normalizeWorkspacePath(p: string): string {
-    let normalized = p.replace(/\\/gu, "/");
-    normalized = path.posix.normalize(normalized);
-    if (normalized.startsWith("/Workspace/")) {
-        normalized = normalized.slice("/Workspace".length);
-        normalized = path.posix.normalize(normalized);
-    }
-    return normalized;
-}
-
-function workspacePrefixedPath(p: string): string {
-    return path.posix.join("/Workspace", normalizeWorkspacePath(p));
-}
-
-function localPathToRemoteWorkspacePath(
-    localFilePath: string,
-    localRoot: string,
-    remoteRootPath: string
-): string {
-    const relative = path.relative(localRoot, localFilePath);
-    // On Windows, if paths are on different drives, `relative` can be an absolute
-    // path. Either way, we only support running files within the bundle root.
-    if (relative.startsWith("..") || path.isAbsolute(relative)) {
-        fail(
-            `File is not within bundle root. File: ${localFilePath}, bundle root: ${localRoot}`
-        );
-    }
-
-    const relativePosix = relative.split(path.sep).join(path.posix.sep);
-    const remoteRootWorkspace = workspacePrefixedPath(remoteRootPath);
-    return path.posix.join(remoteRootWorkspace, relativePosix);
-}
-
-function remoteWorkspacePathToLocalPath(
-    remoteWorkspaceFilePath: string,
-    localRoot: string,
-    remoteRootPath: string
-): string | undefined {
-    const remoteNoWorkspace = normalizeWorkspacePath(remoteWorkspaceFilePath);
-    const rootNoWorkspace = normalizeWorkspacePath(remoteRootPath);
-
-    const rel = path.posix.relative(rootNoWorkspace, remoteNoWorkspace);
-    if (rel.startsWith("..")) {
-        return undefined;
-    }
-
-    return path.join(localRoot, ...rel.split("/"));
-}
-
-function compileBootstrapCommand(opts: {
-    remotePythonFile: string;
-    remoteRepoRoot: string;
-    argv: string[];
-    envVars: Record<string, string>;
-}) {
-    ensureValidEnvVars(opts.envVars);
-
-    let bootstrap = bootstrapTemplate;
-
-    bootstrap = bootstrap.replace(
-        '"PYTHON_FILE"',
-        `"${opts.remotePythonFile}"`
-    );
-    bootstrap = bootstrap.replace('"REPO_PATH"', `"${opts.remoteRepoRoot}"`);
-    bootstrap = bootstrap.replace(
-        "args = []",
-        `args = ['${opts.argv.map(escapePythonString).join("', '")}'];`
-    );
-    bootstrap = bootstrap.replace(
-        "env = {}",
-        `env = ${JSON.stringify(opts.envVars)}`
-    );
-
-    return bootstrap;
-}
-
-function isLikelyClusterId(value: string): boolean {
-    // Common format: 0123-456789-abcde123
-    return /^\d{4}-\d{6}-[a-zA-Z0-9]+$/u.test(value);
 }
 
 async function main() {
@@ -510,6 +381,8 @@ async function main() {
         "bundle",
         "validate",
         ...(target ? ["--target", target] : []),
+        "--output",
+        "json",
     ];
     const validate = await runDatabricksCli(validateArgs, {
         cwd: bundleRoot,
@@ -644,7 +517,7 @@ async function main() {
             `Running ${path.relative(bundleRoot, absoluteFilePath)} ...\n`
         );
 
-        const command = compileBootstrapCommand({
+        const command = compileBootstrapCommand(bootstrapTemplate, {
             remotePythonFile,
             remoteRepoRoot,
             argv: [remotePythonFile, ...scriptArgs],

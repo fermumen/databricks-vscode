@@ -1,0 +1,11 @@
+  bundle:
+    name: exec-example
+
+  targets:
+    dev:
+      mode: development
+      default: true
+      cluster_id: 0702-165645-5f7ehvtu
+      workspace:
+        host: https://adb-4430213680693954.14.azuredatabricks.net
+        root_path: /Workspace/Users/fernandomendez@tfl.gov.uk/.bundle/exec-example

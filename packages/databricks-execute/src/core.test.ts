@@ -1,0 +1,131 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+    coalesce,
+    compileBootstrapCommand,
+    ensureValidEnvVars,
+    isLikelyClusterId,
+    localPathToRemoteWorkspacePath,
+    normalizeHost,
+    normalizeWorkspacePath,
+    parseDotConfig,
+    remoteWorkspacePathToLocalPath,
+    workspacePrefixedPath,
+} from "./core";
+
+test("parseDotConfig parses key=value with comments and quotes", () => {
+    const cfg = parseDotConfig(`
+# comment
+host=https://example.com
+token="abc"
+cluster='My Cluster'
+bad line
+`);
+    assert.equal(cfg.host, "https://example.com");
+    assert.equal(cfg.token, "abc");
+    assert.equal(cfg.cluster, "My Cluster");
+    assert.equal(cfg["bad line"], undefined);
+});
+
+test("coalesce returns first non-empty value", () => {
+    assert.equal(coalesce(undefined, "", "a", "b"), "a");
+});
+
+test("normalizeHost prefixes https:// when missing", () => {
+    assert.equal(
+        normalizeHost("adb-123.cloud.databricks.com"),
+        "https://adb-123.cloud.databricks.com"
+    );
+    assert.equal(normalizeHost("https://example.com"), "https://example.com");
+});
+
+test("workspace path helpers normalize and (un)prefix /Workspace", () => {
+    assert.equal(normalizeWorkspacePath("/Workspace/Users/me"), "/Users/me");
+    assert.equal(workspacePrefixedPath("/Users/me"), "/Workspace/Users/me");
+    assert.equal(
+        workspacePrefixedPath("/Workspace/Users/me"),
+        "/Workspace/Users/me"
+    );
+});
+
+test("local/remote path mapping stays within bundle root", () => {
+    const localRoot = "/repo";
+    const remoteRoot = "/Users/me/project";
+    const file = "/repo/src/main.py";
+
+    assert.equal(
+        localPathToRemoteWorkspacePath(file, localRoot, remoteRoot),
+        "/Workspace/Users/me/project/src/main.py"
+    );
+
+    assert.throws(
+        () =>
+            localPathToRemoteWorkspacePath(
+                "/other/x.py",
+                localRoot,
+                remoteRoot
+            ),
+        /File is not within bundle root/
+    );
+});
+
+test("remoteWorkspacePathToLocalPath maps /Workspace paths to local paths", () => {
+    const localRoot = "/repo";
+    const remoteRoot = "/Users/me/project";
+
+    assert.equal(
+        remoteWorkspacePathToLocalPath(
+            "/Workspace/Users/me/project/a/b.py",
+            localRoot,
+            remoteRoot
+        ),
+        "/repo/a/b.py"
+    );
+    assert.equal(
+        remoteWorkspacePathToLocalPath(
+            "/Workspace/Users/other/x.py",
+            localRoot,
+            remoteRoot
+        ),
+        undefined
+    );
+});
+
+test("ensureValidEnvVars enforces shell-like KEY names", () => {
+    // eslint-disable-next-line @typescript-eslint/naming-convention
+    ensureValidEnvVars({FOO: "1", BAR_BAZ1: "2", _OK: "3"});
+    assert.throws(
+        // eslint-disable-next-line @typescript-eslint/naming-convention
+        () => ensureValidEnvVars({"1NO": "x"}),
+        /Invalid environment variable/
+    );
+    assert.throws(
+        // eslint-disable-next-line @typescript-eslint/naming-convention
+        () => ensureValidEnvVars({"BAD-NAME": "x"}),
+        /Invalid environment variable/
+    );
+});
+
+test("compileBootstrapCommand injects argv and env", () => {
+    const template = `python_file = "PYTHON_FILE"\nrepo_path = "REPO_PATH"\nargs = []\nenv = {}\n`;
+    const out = compileBootstrapCommand(template, {
+        remotePythonFile: "/Workspace/Users/me/project/a.py",
+        remoteRepoRoot: "/Workspace/Users/me/project",
+        argv: ["/Workspace/Users/me/project/a.py", "x", "y"],
+        // eslint-disable-next-line @typescript-eslint/naming-convention
+        envVars: {HELLO: "world"},
+    });
+    assert.match(out, /python_file = "\/Workspace\/Users\/me\/project\/a\.py"/);
+    assert.match(out, /repo_path = "\/Workspace\/Users\/me\/project"/);
+    assert.match(
+        out,
+        /args = \['\/Workspace\/Users\/me\/project\/a\.py', 'x', 'y'\];/
+    );
+    assert.match(out, /env = \{"HELLO":"world"\}/);
+});
+
+test("isLikelyClusterId matches common cluster id format", () => {
+    assert.equal(isLikelyClusterId("0123-456789-abcde123"), true);
+    assert.equal(isLikelyClusterId("My Cluster"), false);
+});
