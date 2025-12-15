@@ -1,21 +1,42 @@
 {
-    "name": "@databricks/databricks-execute",
+    "name": "@fermumen/databricks-execute",
     "version": "2.10.3",
-    "private": true,
     "description": "CLI to sync and execute a local file on Databricks (mirrors VS Code extension runFile behavior).",
     "license": "LicenseRef-LICENSE",
-    "bin": "dist/cli.js",
+    "homepage": "https://github.com/fermumen/databricks-vscode/tree/main/packages/databricks-execute",
+    "bugs": {
+        "url": "https://github.com/fermumen/databricks-vscode/issues"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/fermumen/databricks-vscode.git"
+    },
+    "publishConfig": {
+        "access": "public"
+    },
+    "bin": {
+        "databricks-execute": "dist/cli.js"
+    },
+    "files": [
+        "dist",
+        "LICENSE",
+        "NOTICE",
+        "README.md",
+        "example_usage.md"
+    ],
     "scripts": {
         "build": "node scripts/build.js",
         "watch": "node scripts/build.js --watch",
         "clean": "rm -rf dist node_modules",
         "fix": "eslint src --ext ts --fix && prettier src README.md package.json tsconfig.json --write",
+        "prepack": "node scripts/build.js",
         "test:lint": "eslint src --ext ts && prettier src README.md package.json tsconfig.json -c",
+        "test:integ": "node scripts/build.js && node scripts/test-integ.js",
         "test:unit": "node scripts/test.js",
         "test": "yarn run test:lint && yarn run test:unit"
     },
     "dependencies": {
-        "@databricks/databricks-sdk": "file:../../vendor/databricks-sdk.tgz"
+        "@databricks/databricks-sdk": "^0.10.0"
     },
     "devDependencies": {
         "@types/node": "^20.10.4",

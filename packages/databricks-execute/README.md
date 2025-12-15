@@ -17,6 +17,18 @@ node .yarn/releases/yarn-3.2.1.cjs workspace @databricks/databricks-execute buil
 
 ## Install the command
 
+### From npm (one-line install)
+
+```bash
+npm install -g @databricks/databricks-execute
+```
+
+Then run:
+
+```bash
+databricks-execute path/to/local/file.py -- arg1 arg2
+```
+
 ### Local (recommended for this repo)
 
 This exposes `databricks-execute` on your PATH via `node_modules/.bin`:
@@ -44,6 +56,8 @@ npm install -g ./packages/databricks-execute
 ```bash
 databricks-execute path/to/local/file.py -- arg1 arg2
 ```
+
+This CLI shells out to the Databricks CLI (`databricks`), so make sure it’s installed and on your `PATH`.
 
 ### Notebook mode
 
