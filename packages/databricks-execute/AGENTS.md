@@ -11,11 +11,11 @@ This folder is a standalone Yarn workspace package that builds the `databricks-e
 ## Common commands (run from repo root)
 
 - Install deps: `node .yarn/releases/yarn-3.2.1.cjs install`
-- Build: `node .yarn/releases/yarn-3.2.1.cjs workspace @databricks/databricks-execute build`
-- Watch build: `node .yarn/releases/yarn-3.2.1.cjs workspace @databricks/databricks-execute watch`
-- Lint/format check: `node .yarn/releases/yarn-3.2.1.cjs workspace @databricks/databricks-execute test:lint`
-- Unit tests: `node .yarn/releases/yarn-3.2.1.cjs workspace @databricks/databricks-execute test:unit`
-- Integration tests (real workspace/cluster, opt-in): `DATABRICKS_EXECUTE_INTEG=1 DATABRICKS_EXECUTE_CLUSTER_ID=<cluster-id> [DATABRICKS_EXECUTE_INTEG_START_CLUSTER=1] node .yarn/releases/yarn-3.2.1.cjs workspace @databricks/databricks-execute test:integ`
+- Build: `node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute build`
+- Watch build: `node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute watch`
+- Lint/format check: `node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute test:lint`
+- Unit tests: `node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute test:unit`
+- Integration tests (real workspace/cluster, opt-in): `DATABRICKS_EXECUTE_INTEG=1 DATABRICKS_EXECUTE_CLUSTER_ID=<cluster-id> [DATABRICKS_EXECUTE_INTEG_START_CLUSTER=1] node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute test:integ`
 
 ### Integration test example (current dev setup)
 
@@ -23,7 +23,7 @@ This folder is a standalone Yarn workspace package that builds the `databricks-e
 DATABRICKS_EXECUTE_INTEG=1 \
   DATABRICKS_EXECUTE_CLUSTER_ID=0702-165645-5f7ehvtu \
   DATABRICKS_HOST=https://adb-4430213680693954.14.azuredatabricks.net \
-  node .yarn/releases/yarn-3.2.1.cjs workspace @databricks/databricks-execute test:integ
+  node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute test:integ
 ```
 
 ## Design choices / constraints

@@ -339,9 +339,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@databricks/databricks-execute@workspace:packages/databricks-execute":
+"@fermumen/databricks-execute@workspace:packages/databricks-execute":
   version: 0.0.0-use.local
-  resolution: "@databricks/databricks-execute@workspace:packages/databricks-execute"
+  resolution: "@fermumen/databricks-execute@workspace:packages/databricks-execute"
   dependencies:
     "@databricks/databricks-sdk": "file:../../vendor/databricks-sdk.tgz"
     "@types/node": ^20.10.4
@@ -354,9 +354,9 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@databricks/databricks-sdk@file:../../vendor/databricks-sdk.tgz::locator=%40databricks%2Fdatabricks-execute%40workspace%3Apackages%2Fdatabricks-execute":
+"@databricks/databricks-sdk@file:../../vendor/databricks-sdk.tgz::locator=%40fermumen%2Fdatabricks-execute%40workspace%3Apackages%2Fdatabricks-execute":
   version: 0.10.0
-  resolution: "@databricks/databricks-sdk@file:../../vendor/databricks-sdk.tgz::locator=%40databricks%2Fdatabricks-execute%40workspace%3Apackages%2Fdatabricks-execute"
+  resolution: "@databricks/databricks-sdk@file:../../vendor/databricks-sdk.tgz::locator=%40fermumen%2Fdatabricks-execute%40workspace%3Apackages%2Fdatabricks-execute"
   dependencies:
     "@types/ini": ^4.1.0
     "@types/node": ^18.19.23

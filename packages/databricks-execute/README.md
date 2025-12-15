@@ -12,7 +12,7 @@ For notebooks (`.ipynb` or “Databricks notebook source” files like `example.
 
 ```bash
 node .yarn/releases/yarn-3.2.1.cjs install
-node .yarn/releases/yarn-3.2.1.cjs workspace @databricks/databricks-execute build
+node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute build
 ```
 
 ## Install the command
@@ -20,7 +20,7 @@ node .yarn/releases/yarn-3.2.1.cjs workspace @databricks/databricks-execute buil
 ### From npm (one-line install)
 
 ```bash
-npm install -g @databricks/databricks-execute
+npm install -g @fermumen/databricks-execute
 ```
 
 Then run:
@@ -34,7 +34,7 @@ databricks-execute path/to/local/file.py -- arg1 arg2
 This exposes `databricks-execute` on your PATH via `node_modules/.bin`:
 
 ```bash
-node .yarn/releases/yarn-3.2.1.cjs workspace @databricks/databricks-execute add -D file:packages/databricks-execute
+node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute add -D file:packages/databricks-execute
 ```
 
 Then run it with:
