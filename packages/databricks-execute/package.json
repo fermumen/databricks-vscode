@@ -1,6 +1,6 @@
 {
     "name": "@fermumen/databricks-execute",
-    "version": "2.10.6",
+    "version": "2.11.0",
     "description": "CLI to sync and execute a local file on Databricks (mirrors VS Code extension runFile behavior).",
     "license": "LicenseRef-LICENSE",
     "homepage": "https://github.com/fermumen/databricks-vscode/tree/main/packages/databricks-execute",

@@ -42,6 +42,7 @@ Run:
 Notes:
 - Script args (`-- arg1 arg2`) and `--env KEY=VALUE` work only for **plain** `.py` files.
 - Notebook runs currently don’t accept positional args or `--env` (use widgets / `base_parameters` patterns inside the notebook instead).
+- Long-running runs are supported. `databricks-execute` waits for completion and prints heartbeat status logs while waiting.
 
 ## Databricks notebook source:
 When creating new files prefer this format.
@@ -106,4 +107,3 @@ Guidance for agents:
 - Run plain Python: `databricks-execute path/to/script.py --target dev -- arg1 arg2`
 - Use a specific cluster by name/id: `databricks-execute path/to/script.py --target dev --cluster <cluster-name-or-id>`
 - Start a stopped cluster: `databricks-execute path/to/script.py --target dev --start-cluster`
-

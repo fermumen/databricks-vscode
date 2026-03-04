@@ -78,6 +78,9 @@ Notes:
 
 -   Positional args (`-- arg1 arg2`) and `--env KEY=VALUE` are only supported in Command Execution mode (plain `.py` files).
 -   Notebook output is printed by extracting text stdout/stderr (and tracebacks) from the exported run. For rich outputs (tables/plots/HTML), open the run URL in a browser.
+-   Long-running executions are supported. The CLI waits for completion and prints periodic heartbeat status lines while the run is active.
+-   In plain `.py` mode (Command Execution API), client-side wait timeout is set to 240 hours.
+-   In notebook workflow mode (Jobs API), one-off run timeout is explicitly set to `0` (no timeout).
 
 By default it uses `bundle.yml` / `databricks.yml` (via `databricks bundle validate`) for `workspace.host`, workspace file path, and cluster id.
 

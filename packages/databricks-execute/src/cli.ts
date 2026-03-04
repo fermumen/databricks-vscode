@@ -31,6 +31,7 @@ import {
 } from "./core";
 
 let activeDatabricksCliProcess: ChildProcess | undefined;
+const WAIT_HEARTBEAT_MS = 30_000;
 
 type CliOptions = {
     configPath?: string;
@@ -84,6 +85,7 @@ function printHelp() {
             "Notes:",
             "  - .ipynb and 'Databricks notebook source' files run as workflow notebooks (Jobs API).",
             "  - Positional args and --env are only supported for plain .py files.",
+            "  - Long runs are supported: the CLI keeps waiting and prints periodic progress heartbeats.",
             "",
             "Options:",
             "  --config <path>        Path to .config file (default: <bundleRoot>/.config)",
@@ -489,8 +491,29 @@ async function main() {
         }
     }
 
+    // If no explicit token was provided, resolve it from the Databricks CLI's
+    // auth chain (reads ~/.databrickscfg, Azure CLI, etc.) so that the
+    // WorkspaceClient authenticates as the same identity used by bundle sync.
+    let resolvedToken = tokenOverride;
+    if (!resolvedToken) {
+        try {
+            const authEnv = await runDatabricksCli(
+                ["auth", "env", "--host", host, "-o", "json"],
+                {cwd: bundleRoot, env}
+            );
+            if (authEnv.code === 0) {
+                const authJson = JSON.parse(authEnv.stdout);
+                if (authJson?.env?.DATABRICKS_TOKEN) {
+                    resolvedToken = authJson.env.DATABRICKS_TOKEN;
+                }
+            }
+        } catch {
+            // Fall through to SDK default auth chain
+        }
+    }
+
     const wsClient = new WorkspaceClient(
-        tokenOverride ? {host, token: tokenOverride, authType: "pat"} : {host}
+        resolvedToken ? {host, token: resolvedToken, authType: "pat"} : {host}
     );
     const apiClient: ApiClient = wsClient.apiClient;
 
@@ -561,6 +584,7 @@ async function main() {
 
         /* eslint-disable @typescript-eslint/naming-convention */
         const run = await WorkflowRun.submitRun(apiClient, {
+            timeout_seconds: 0,
             tasks: [
                 {
                     task_key: "databricks_execute_notebook",
@@ -569,6 +593,7 @@ async function main() {
                         base_parameters: {},
                     },
                     existing_cluster_id: cluster.id,
+                    timeout_seconds: 0,
                 },
             ],
         });
@@ -581,9 +606,15 @@ async function main() {
         }
 
         let lastState: string | undefined;
+        let lastStateLogAt = 0;
         await run.wait((state) => {
-            if (state !== lastState) {
+            const now = Date.now();
+            if (
+                state !== lastState ||
+                now - lastStateLogAt >= WAIT_HEARTBEAT_MS
+            ) {
                 lastState = state;
+                lastStateLogAt = now;
                 nowPrefix(`Run state: ${state}`);
             }
         }, cts.token);
@@ -711,9 +742,22 @@ async function main() {
             envVars: options.env,
         });
 
+        let lastCommandStatus: string | undefined;
+        let lastCommandStatusLogAt = 0;
         const response = await executionContext.execute(
             command,
-            undefined,
+            (status) => {
+                const currentStatus = status.status ?? "Unknown";
+                const now = Date.now();
+                if (
+                    currentStatus !== lastCommandStatus ||
+                    now - lastCommandStatusLogAt >= WAIT_HEARTBEAT_MS
+                ) {
+                    lastCommandStatus = currentStatus;
+                    lastCommandStatusLogAt = now;
+                    nowPrefix(`Command status: ${currentStatus}`);
+                }
+            },
             cts.token,
             new Time(240, TimeUnits.hours)
         );
