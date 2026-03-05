@@ -26,6 +26,48 @@ DATABRICKS_EXECUTE_INTEG=1 \
   node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute test:integ
 ```
 
+## Merging upstream changes
+
+This repo is a fork of [databricks/databricks-vscode](https://github.com/databricks/databricks-vscode). The `packages/databricks-execute` package is our addition; everything else is upstream.
+
+### One-time setup (already done)
+
+```bash
+git remote add upstream https://github.com/databricks/databricks-vscode.git
+```
+
+### Merge workflow
+
+```bash
+# 1. Fetch upstream
+git fetch upstream
+
+# 2. Merge into main
+git merge upstream/main --no-edit
+
+# 3. Resolve yarn.lock conflict (almost always the only conflict)
+git checkout --theirs yarn.lock
+node .yarn/releases/yarn-3.2.1.cjs install
+git add yarn.lock
+
+# 4. Build and test databricks-execute
+node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute build
+node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute test
+
+# 5. Smoke test against exec-example/
+node packages/databricks-execute/dist/cli.js exec-example/example_dbs.py --target dev --no-sync
+
+# 6. Complete the merge
+git commit
+```
+
+### What to watch for
+
+- **`yarn.lock`** — always conflicts; resolve with `git checkout --theirs` then `yarn install`.
+- **SDK changes** — `cli.ts` imports from `@databricks/sdk-experimental` and from `packages/databricks-vscode/src/sdk-extensions`. If upstream changes those APIs (exports, method signatures), update `cli.ts` accordingly.
+- **`bootstrap.py` / `ErrorParser.ts`** — also imported by `cli.ts`. Check if upstream modified them.
+- **Quick check**: `git log upstream/main --since="<last-merge-date>" -- packages/databricks-vscode/src/sdk-extensions packages/databricks-vscode/src/run/ErrorParser.ts packages/databricks-vscode/resources/python/bootstrap.py` to see if our imported files changed.
+
 ## Design choices / constraints
 
 - Configuration comes from `databricks.yml` (resolved via `databricks bundle validate`); CLI flags and env vars override bundle values. Use `databricks-execute init` to scaffold or update a `databricks.yml` with a `dbexec` target.
