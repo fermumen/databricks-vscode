@@ -4,13 +4,13 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
-import type {CancellationToken} from "@databricks/databricks-sdk";
+import type {CancellationToken} from "@databricks/sdk-experimental";
 import {
     ApiClient,
     Time,
     TimeUnits,
     WorkspaceClient,
-} from "@databricks/databricks-sdk";
+} from "@databricks/sdk-experimental";
 
 import bootstrapTemplate from "../../databricks-vscode/resources/python/bootstrap.py";
 import {parseErrorResult} from "../../databricks-vscode/src/run/ErrorParser";

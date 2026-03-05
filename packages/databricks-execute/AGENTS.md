@@ -33,4 +33,4 @@ DATABRICKS_EXECUTE_INTEG=1 \
 - Execution mirrors the VS Code extension behavior: `bundle sync` then run via the Command Execution API using the same `bootstrap.py` and error parsing.
 - Core pure helpers live in `src/core.ts`; add tests in `src/core.test.ts` using Node’s built-in `node:test` runner.
 - Node version: tests use `node:test` (Node 18+).
-- the vendor databricks-sdk get's bundled as dist-vendor on build time
+- Uses `@databricks/sdk-experimental` (public npm package), bundled into `dist/cli.js` at build time by esbuild.
