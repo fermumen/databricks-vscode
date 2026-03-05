@@ -37,7 +37,8 @@
         "google-auth-library": "^10.4.1",
         "ini": "^5.0.0",
         "reflect-metadata": "^0.2.2",
-        "semver": "^7.7.2"
+        "semver": "^7.7.2",
+        "yaml": "^2.3.4"
     },
     "devDependencies": {
         "@types/node": "^20.10.4",

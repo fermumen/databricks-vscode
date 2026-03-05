@@ -73,7 +73,7 @@ async function build() {
         banner: {js: banner},
         loader: {".py": "text"},
         // Keep these as runtime deps (the vendored SDK requires them).
-        external: ["reflect-metadata", "ini", "semver", "google-auth-library"],
+        external: ["reflect-metadata", "ini", "semver", "google-auth-library", "yaml"],
         plugins: [
             {
                 name: "vendored-databricks-sdk",

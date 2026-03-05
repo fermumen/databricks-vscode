@@ -28,7 +28,8 @@ DATABRICKS_EXECUTE_INTEG=1 \
 
 ## Design choices / constraints
 
-- Configuration comes from `databricks bundle validate` (bundle files) plus optional `.config` overrides; CLI flags/env vars override everything.
+- Configuration comes from `databricks.yml` (resolved via `databricks bundle validate`); CLI flags and env vars override bundle values. Use `databricks-execute init` to scaffold or update a `databricks.yml` with a `dbexec` target.
+- Auth is always resolved via the Databricks CLI auth chain (`databricks auth env`). No tokens are stored in config files.
 - Execution mirrors the VS Code extension behavior: `bundle sync` then run via the Command Execution API using the same `bootstrap.py` and error parsing.
 - Core pure helpers live in `src/core.ts`; add tests in `src/core.test.ts` using Node’s built-in `node:test` runner.
 - Node version: tests use `node:test` (Node 18+).

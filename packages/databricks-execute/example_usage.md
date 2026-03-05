@@ -106,4 +106,4 @@ Guidance for agents:
 - Run notebook: `databricks-execute path/to/notebook.ipynb --target dev`
 - Run plain Python: `databricks-execute path/to/script.py --target dev -- arg1 arg2`
 - Use a specific cluster by name/id: `databricks-execute path/to/script.py --target dev --cluster <cluster-name-or-id>`
-- Start a stopped cluster: `databricks-execute path/to/script.py --target dev --start-cluster`
+- Stopped clusters are started automatically; to disable: `databricks-execute path/to/script.py --target dev --no-start-cluster`

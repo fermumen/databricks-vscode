@@ -12,24 +12,9 @@ import {
     localPathToRemoteWorkspacePath,
     normalizeHost,
     normalizeWorkspacePath,
-    parseDotConfig,
     remoteWorkspacePathToLocalPath,
     workspacePrefixedPath,
 } from "./core";
-
-test("parseDotConfig parses key=value with comments and quotes", () => {
-    const cfg = parseDotConfig(`
-# comment
-host=https://example.com
-token="abc"
-cluster='My Cluster'
-bad line
-`);
-    assert.equal(cfg.host, "https://example.com");
-    assert.equal(cfg.token, "abc");
-    assert.equal(cfg.cluster, "My Cluster");
-    assert.equal(cfg["bad line"], undefined);
-});
 
 test("coalesce returns first non-empty value", () => {
     assert.equal(coalesce(undefined, "", "a", "b"), "a");

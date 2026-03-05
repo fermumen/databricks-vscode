@@ -24,7 +24,6 @@ import {
     localPathToRemoteWorkspacePath,
     normalizeHost,
     normalizeWorkspacePath,
-    parseDotConfig,
     remoteWorkspacePathToLocalPath,
     workspacePrefixedPath,
     isLikelyClusterId,
@@ -34,21 +33,13 @@ let activeDatabricksCliProcess: ChildProcess | undefined;
 const WAIT_HEARTBEAT_MS = 30_000;
 
 type CliOptions = {
-    configPath?: string;
     target?: string;
     host?: string;
     token?: string;
     cluster?: string;
-    startCluster?: boolean;
+    startCluster: boolean;
     noSync?: boolean;
     env: Record<string, string>;
-};
-
-type ExecuteConfig = {
-    host?: string;
-    token?: string;
-    target?: string;
-    cluster?: string;
 };
 
 class SimpleCancellationTokenSource {
@@ -81,19 +72,21 @@ function printHelp() {
         [
             "Usage:",
             "  databricks-execute <path/to/file.py|file.ipynb> [options] [-- script args...]",
+            "  databricks-execute init [--host <url>] [--cluster <id>] [--target <name>]",
             "",
             "Notes:",
+            "  - Run 'databricks-execute init' to create or update databricks.yml with a dbexec target.",
             "  - .ipynb and 'Databricks notebook source' files run as workflow notebooks (Jobs API).",
             "  - Positional args and --env are only supported for plain .py files.",
             "  - Long runs are supported: the CLI keeps waiting and prints periodic progress heartbeats.",
             "",
             "Options:",
-            "  --config <path>        Path to .config file (default: <bundleRoot>/.config)",
-            "  --target <name>        Bundle target (default: from .config or bundle default)",
+            "  --target <name>        Bundle target (default: bundle default)",
             "  --host <url>           Databricks workspace host (or set DATABRICKS_HOST; default: from bundle)",
             "  --token <token>        Databricks PAT token (or set DATABRICKS_TOKEN; otherwise uses CLI auth)",
             "  --cluster <name|id>    Cluster name or cluster id (default: from bundle validate output)",
-            "  --start-cluster        Start cluster if not running",
+            "  --start-cluster        Start cluster if not running (default: on)",
+            "  --no-start-cluster     Do not auto-start a stopped cluster",
             "  --no-sync              Skip 'databricks bundle sync' step",
             "  --env KEY=VALUE        Inject env var for the remote process (repeatable)",
             "  --help                 Show help",
@@ -117,7 +110,7 @@ function parseArgs(argv: string[]): {
     const scriptArgs =
         delimiterIndex === -1 ? [] : argv.slice(delimiterIndex + 1);
 
-    const options: CliOptions = {env: {}};
+    const options: CliOptions = {env: {}, startCluster: true};
     let filePath: string | undefined;
 
     for (let i = 0; i < cliArgs.length; i++) {
@@ -143,9 +136,6 @@ function parseArgs(argv: string[]): {
         };
 
         switch (a) {
-            case "--config":
-                options.configPath = next();
-                break;
             case "--target":
                 options.target = next();
                 break;
@@ -160,6 +150,9 @@ function parseArgs(argv: string[]): {
                 break;
             case "--start-cluster":
                 options.startCluster = true;
+                break;
+            case "--no-start-cluster":
+                options.startCluster = false;
                 break;
             case "--no-sync":
                 options.noSync = true;
@@ -271,6 +264,12 @@ async function runDatabricksCli(
 }
 
 async function main() {
+    if (process.argv[2] === "init") {
+        const {runInit} = await import("./init");
+        await runInit(process.argv.slice(3));
+        return;
+    }
+
     const {filePath, options, scriptArgs} = parseArgs(process.argv.slice(2));
     if (!filePath) {
         printHelp();
@@ -329,54 +328,15 @@ async function main() {
         );
     }
 
-    const defaultConfigPath = path.join(bundleRoot, ".config");
-    const configPath = options.configPath
-        ? path.resolve(options.configPath)
-        : defaultConfigPath;
-
-    let config: ExecuteConfig = {};
-    try {
-        const raw = await fs.readFile(configPath, "utf8");
-        const parsed = parseDotConfig(raw);
-
-        config = {
-            host: coalesce(parsed.host, parsed.DATABRICKS_HOST),
-            token: coalesce(parsed.token, parsed.DATABRICKS_TOKEN),
-            target: coalesce(parsed.target, parsed.DATABRICKS_BUNDLE_TARGET),
-            cluster: coalesce(
-                parsed.cluster,
-                parsed.clusterName,
-                parsed.cluster_id,
-                parsed.clusterId,
-                parsed.DATABRICKS_CLUSTER,
-                parsed.DATABRICKS_CLUSTER_ID
-            ),
-        };
-    } catch (e: any) {
-        if (configPath !== defaultConfigPath) {
-            throw e;
-        }
-        // No default config file is fine; fall back to env + CLI flags.
-    }
-
     const target = coalesce(
         options.target,
-        config.target,
         process.env.DATABRICKS_BUNDLE_TARGET
     );
 
-    const clusterSpec = coalesce(options.cluster, config.cluster);
+    const clusterSpec = options.cluster;
 
-    const hostOverrideRaw = coalesce(
-        options.host,
-        config.host,
-        process.env.DATABRICKS_HOST
-    );
-    const tokenOverride = coalesce(
-        options.token,
-        config.token,
-        process.env.DATABRICKS_TOKEN
-    );
+    const hostOverrideRaw = coalesce(options.host, process.env.DATABRICKS_HOST);
+    const tokenOverride = coalesce(options.token, process.env.DATABRICKS_TOKEN);
 
     const env: Record<string, string> = {};
     if (hostOverrideRaw) {
@@ -534,7 +494,7 @@ async function main() {
 
     if (!cluster) {
         fail(
-            "No cluster configured. Provide --cluster (name or id), add `cluster=` to .config, or set bundle.compute_id/cluster_id."
+            "No cluster configured. Provide --cluster (name or id), or set cluster_id / bundle.compute_id in databricks.yml target."
         );
     }
 

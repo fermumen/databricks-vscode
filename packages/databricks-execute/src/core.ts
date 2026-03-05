@@ -2,34 +2,6 @@ import path from "node:path";
 
 export type NotebookType = "IPYNB" | "PY_DBNB" | "OTHER_DBNB";
 
-export function parseDotConfig(contents: string): Record<string, string> {
-    const out: Record<string, string> = {};
-
-    for (const rawLine of contents.split(/\r?\n/u)) {
-        const line = rawLine.trim();
-        if (line.length === 0 || line.startsWith("#")) {
-            continue;
-        }
-
-        const idx = line.indexOf("=");
-        if (idx <= 0) {
-            continue;
-        }
-
-        const key = line.slice(0, idx).trim();
-        let value = line.slice(idx + 1).trim();
-        if (
-            (value.startsWith('"') && value.endsWith('"')) ||
-            (value.startsWith("'") && value.endsWith("'"))
-        ) {
-            value = value.slice(1, -1);
-        }
-        out[key] = value;
-    }
-
-    return out;
-}
-
 export function coalesce(
     ...values: Array<string | undefined>
 ): string | undefined {

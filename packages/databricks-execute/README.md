@@ -82,21 +82,38 @@ Notes:
 -   In plain `.py` mode (Command Execution API), client-side wait timeout is set to 240 hours.
 -   In notebook workflow mode (Jobs API), one-off run timeout is explicitly set to `0` (no timeout).
 
-By default it uses `bundle.yml` / `databricks.yml` (via `databricks bundle validate`) for `workspace.host`, workspace file path, and cluster id.
+All configuration is read from `databricks.yml` (via `databricks bundle validate`): `workspace.host`, workspace file path, and `cluster_id`.
 
-## Authentication / `.config` (optional)
+If the configured cluster is stopped, it is started automatically. Pass `--no-start-cluster` to disable this.
 
-For authentication, prefer the standard Databricks CLI auth flow (for example `databricks auth login`) or set `DATABRICKS_TOKEN`.
+## Quick start with `init`
 
-If you still want a repo-local override file, you can use `.config` in the bundle root with plain `key=value` lines (comments with `#` are allowed):
+To create or update a `databricks.yml` with a target for `databricks-execute`:
 
-```ini
-host=https://adb-1234567890123456.7.azuredatabricks.net
-token=dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-cluster=My Cluster Name
-target=dev
+```bash
+databricks-execute init --host https://adb-123.azuredatabricks.net --cluster 0123-456789-abcde123
 ```
 
-CLI flags override `.config`, and environment variables can also be used (`DATABRICKS_HOST`, `DATABRICKS_TOKEN`).
+This creates a `databricks.yml` in the current directory with a `dbexec` target. If a `databricks.yml` already exists, it adds the target to it.
+
+Options: `--host <url>`, `--cluster <id>`, `--target <name>` (default: `dbexec`), `--name <bundle-name>` (default: directory name). If flags are omitted, you will be prompted interactively.
+
+## Authentication
+
+Authentication is resolved from the Databricks CLI auth chain. Preferred flows:
+
+1. **PAT token in `~/.databrickscfg`** — run `databricks auth login --host <url>` to set up.
+2. **Azure CLI** — if using Azure AD, the Databricks CLI delegates to `az login`.
+3. **`DATABRICKS_TOKEN` env var** — for CI/CD or scripted usage.
+4. **`--token` flag** — explicit override.
+
+The CLI runs `databricks auth env --host <host>` to resolve the token at runtime. No tokens are stored in `databricks.yml`.
+
+## Configuration priority
+
+1. CLI flags (`--host`, `--token`, `--cluster`, `--target`)
+2. Environment variables (`DATABRICKS_HOST`, `DATABRICKS_TOKEN`, `DATABRICKS_BUNDLE_TARGET`)
+3. Bundle validate output (`workspace.host`, `bundle.compute_id` / `cluster_id`)
+4. Databricks CLI auth chain (for token resolution)
 
 Run `databricks-execute --help` for the full set of options.

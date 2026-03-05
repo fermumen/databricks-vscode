@@ -11,6 +11,7 @@ async function main() {
         entryPoints: [
             path.join(projectRoot, "src", "core.ts"),
             path.join(projectRoot, "src", "core.test.ts"),
+            path.join(projectRoot, "src", "init.test.ts"),
         ],
         outdir,
         bundle: false,
@@ -20,9 +21,11 @@ async function main() {
         sourcemap: "inline",
     });
 
-    const result = spawnSync(process.execPath, ["--test", path.join(outdir, "core.test.js")], {
-        stdio: "inherit",
-    });
+    const result = spawnSync(
+        process.execPath,
+        ["--test", path.join(outdir, "core.test.js"), path.join(outdir, "init.test.js")],
+        {stdio: "inherit", cwd: projectRoot}
+    );
     process.exitCode = result.status ?? 1;
 }
 

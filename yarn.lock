@@ -720,6 +720,7 @@ __metadata:
     reflect-metadata: ^0.2.2
     semver: ^7.7.2
     typescript: ^5.5.0
+    yaml: ^2.3.4
   bin:
     databricks-execute: dist/cli.js
   languageName: unknown
