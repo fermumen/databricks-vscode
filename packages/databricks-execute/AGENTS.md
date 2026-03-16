@@ -12,6 +12,7 @@ This folder is a standalone Yarn workspace package that builds the `databricks-e
 
 - Install deps: `node .yarn/releases/yarn-3.2.1.cjs install`
 - Build: `node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute build`
+- Build standalone binary: `node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute build:binary`
 - Watch build: `node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute watch`
 - Lint/format check: `node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute test:lint`
 - Unit tests: `node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute test:unit`

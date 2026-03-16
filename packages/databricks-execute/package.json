@@ -24,6 +24,7 @@
     ],
     "scripts": {
         "build": "node scripts/build.js",
+        "build:binary": "node scripts/build-binary.js",
         "watch": "node scripts/build.js --watch",
         "clean": "rm -rf dist node_modules",
         "fix": "eslint src --ext ts --fix && prettier src README.md package.json tsconfig.json --write",

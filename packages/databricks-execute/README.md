@@ -15,6 +15,30 @@ node .yarn/releases/yarn-3.2.1.cjs install
 node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute build
 ```
 
+## Build a standalone binary with Bun
+
+If you want a single executable instead of a Node.js script, install Bun and run:
+
+```bash
+node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute build:binary
+```
+
+This builds `packages/databricks-execute/dist/databricks-execute` for the local platform.
+You can also target a different platform, for example:
+
+```bash
+node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute build:binary --target bun-linux-x64
+```
+
+For older Linux x64 CPUs without AVX2 support, use Bun's baseline target instead:
+
+```bash
+node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute build:binary --target bun-linux-x64-baseline
+```
+
+The compiled binary is standalone with respect to Node.js/npm, but it still requires the Databricks CLI (`databricks`) on your `PATH` at runtime.
+The binary build uses Bun's production-oriented compile flags (`--minify --sourcemap --bytecode`) and disables Bun's automatic `.env` / `bunfig.toml` loading so runtime behavior stays closer to the Node.js CLI.
+
 ## Install the command
 
 ### From npm (one-line install)
