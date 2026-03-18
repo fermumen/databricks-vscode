@@ -37,6 +37,7 @@ type CliOptions = {
     host?: string;
     token?: string;
     cluster?: string;
+    serverless?: boolean;
     startCluster: boolean;
     noSync?: boolean;
     env: Record<string, string>;
@@ -85,6 +86,7 @@ function printHelp() {
             "  --host <url>           Databricks workspace host (or set DATABRICKS_HOST; default: from bundle)",
             "  --token <token>        Databricks PAT token (or set DATABRICKS_TOKEN; otherwise uses CLI auth)",
             "  --cluster <name|id>    Cluster name or cluster id (default: from bundle validate output)",
+            "  --serverless           [Experimental] Use serverless compute (notebooks only; no cluster needed)",
             "  --start-cluster        Start cluster if not running (default: on)",
             "  --no-start-cluster     Do not auto-start a stopped cluster",
             "  --no-sync              Skip 'databricks bundle sync' step",
@@ -147,6 +149,9 @@ function parseArgs(argv: string[]): {
                 break;
             case "--cluster":
                 options.cluster = next();
+                break;
+            case "--serverless":
+                options.serverless = true;
                 break;
             case "--start-cluster":
                 options.startCluster = true;
@@ -335,6 +340,10 @@ async function main() {
 
     const clusterSpec = options.cluster;
 
+    if (options.serverless && clusterSpec) {
+        fail("--serverless and --cluster are mutually exclusive.");
+    }
+
     const hostOverrideRaw = coalesce(options.host, process.env.DATABRICKS_HOST);
     const tokenOverride = coalesce(options.token, process.env.DATABRICKS_TOKEN);
 
@@ -478,37 +487,44 @@ async function main() {
     const apiClient: ApiClient = wsClient.apiClient;
 
     let cluster: Cluster | undefined;
-    const clusterIdFromBundle =
-        (validateJson?.bundle?.compute_id as string | undefined) ??
-        (validateJson?.bundle?.cluster_id as string | undefined);
+    if (!options.serverless) {
+        const clusterIdFromBundle =
+            (validateJson?.bundle?.compute_id as string | undefined) ??
+            (validateJson?.bundle?.cluster_id as string | undefined);
 
-    if (clusterSpec) {
-        if (isLikelyClusterId(clusterSpec)) {
-            cluster = await Cluster.fromClusterId(apiClient, clusterSpec);
-        } else {
-            cluster = await Cluster.fromClusterName(apiClient, clusterSpec);
-        }
-    } else if (clusterIdFromBundle) {
-        cluster = await Cluster.fromClusterId(apiClient, clusterIdFromBundle);
-    }
-
-    if (!cluster) {
-        fail(
-            "No cluster configured. Provide --cluster (name or id), or set cluster_id / bundle.compute_id in databricks.yml target."
-        );
-    }
-
-    await cluster.refresh();
-    if (!["RUNNING", "RESIZING"].includes(cluster.state)) {
-        if (options.startCluster) {
-            nowPrefix(`Starting cluster ${cluster.name} (${cluster.id})...`);
-            await cluster.start(cts.token, (state) => {
-                nowPrefix(`Cluster state: ${state}`);
-            });
-        } else {
-            fail(
-                `Cluster is ${cluster.state}. Start it and retry, or pass --start-cluster.`
+        if (clusterSpec) {
+            if (isLikelyClusterId(clusterSpec)) {
+                cluster = await Cluster.fromClusterId(apiClient, clusterSpec);
+            } else {
+                cluster = await Cluster.fromClusterName(apiClient, clusterSpec);
+            }
+        } else if (clusterIdFromBundle) {
+            cluster = await Cluster.fromClusterId(
+                apiClient,
+                clusterIdFromBundle
             );
+        }
+
+        if (!cluster) {
+            fail(
+                "No cluster configured. Provide --cluster (name or id), set cluster_id / bundle.compute_id in databricks.yml target, or use --serverless for notebooks."
+            );
+        }
+
+        await cluster.refresh();
+        if (!["RUNNING", "RESIZING"].includes(cluster.state)) {
+            if (options.startCluster) {
+                nowPrefix(
+                    `Starting cluster ${cluster.name} (${cluster.id})...`
+                );
+                await cluster.start(cts.token, (state) => {
+                    nowPrefix(`Cluster state: ${state}`);
+                });
+            } else {
+                fail(
+                    `Cluster is ${cluster.state}. Start it and retry, or pass --start-cluster.`
+                );
+            }
         }
     }
 
@@ -535,28 +551,46 @@ async function main() {
             remotePythonFile
         ).replace(/\.(py|ipynb|scala|r|sql)$/iu, "");
 
+        const computeLabel = options.serverless
+            ? "serverless"
+            : `cluster ${cluster!.id}`;
         nowPrefix(
             `Running ${path.relative(
                 bundleRoot,
                 absoluteFilePath
-            )} as workflow notebook (${notebookType}) ...`
+            )} as workflow notebook (${notebookType}) on ${computeLabel} ...`
         );
 
         /* eslint-disable @typescript-eslint/naming-convention */
-        const run = await WorkflowRun.submitRun(apiClient, {
+        const task: Record<string, unknown> = {
+            task_key: "databricks_execute_notebook",
+            notebook_task: {
+                notebook_path: remoteNotebookPath,
+                base_parameters: {},
+            },
             timeout_seconds: 0,
-            tasks: [
+        };
+        if (options.serverless) {
+            task.environment_key = "databricks_execute_serverless";
+        } else {
+            task.existing_cluster_id = cluster!.id;
+        }
+        const submitRequest: Record<string, unknown> = {
+            timeout_seconds: 0,
+            tasks: [task],
+        };
+        if (options.serverless) {
+            submitRequest.environments = [
                 {
-                    task_key: "databricks_execute_notebook",
-                    notebook_task: {
-                        notebook_path: remoteNotebookPath,
-                        base_parameters: {},
-                    },
-                    existing_cluster_id: cluster.id,
-                    timeout_seconds: 0,
+                    environment_key: "databricks_execute_serverless",
+                    spec: {client: "1"},
                 },
-            ],
-        });
+            ];
+        }
+        const run = await WorkflowRun.submitRun(
+            apiClient,
+            submitRequest as any
+        );
         /* eslint-enable @typescript-eslint/naming-convention */
 
         if (run.runPageUrl) {
@@ -682,8 +716,15 @@ async function main() {
         return;
     }
 
-    nowPrefix(`Creating execution context on cluster ${cluster.id} ...`);
-    const executionContext = await cluster.createExecutionContext("python");
+    if (options.serverless) {
+        fail(
+            "Serverless compute is not supported for plain .py files (the Command Execution API requires a cluster).\n" +
+                "Use --serverless with notebooks (.ipynb or 'Databricks notebook source' files), or remove --serverless and provide a cluster."
+        );
+    }
+
+    nowPrefix(`Creating execution context on cluster ${cluster!.id} ...`);
+    const executionContext = await cluster!.createExecutionContext("python");
     cts.token.onCancellationRequested(async () => {
         try {
             await executionContext.destroy();
