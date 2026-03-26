@@ -98,9 +98,16 @@ If the input file is:
 
 then `databricks-execute` runs it as a **workflow notebook task** instead of using the Command Execution API.
 
+Example:
+
+```bash
+databricks-execute path/to/notebook.py --target dev --widget greeting=hello --widget name=databricks
+```
+
 Notes:
 
 -   Positional args (`-- arg1 arg2`) and `--env KEY=VALUE` are only supported in Command Execution mode (plain `.py` files).
+-   Repeat `--widget KEY=VALUE` to populate notebook widget / `base_parameters` values for notebook runs.
 -   Notebook output is printed by extracting text stdout/stderr (and tracebacks) from the exported run. For rich outputs (tables/plots/HTML), open the run URL in a browser.
 -   Long-running executions are supported. The CLI waits for completion and prints periodic heartbeat status lines while the run is active.
 -   In plain `.py` mode (Command Execution API), client-side wait timeout is set to 240 hours.

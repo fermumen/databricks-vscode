@@ -21,6 +21,7 @@ import {
     detectNotebookType,
     extractNotebookTextOutputFromExportedHtml,
     htmlToPlainText,
+    parseKeyValueOption,
     localPathToRemoteWorkspacePath,
     normalizeHost,
     normalizeWorkspacePath,
@@ -41,6 +42,7 @@ type CliOptions = {
     startCluster: boolean;
     noSync?: boolean;
     env: Record<string, string>;
+    widgetParams: Record<string, string>;
 };
 
 class SimpleCancellationTokenSource {
@@ -48,8 +50,8 @@ class SimpleCancellationTokenSource {
 
     readonly token: CancellationToken = {
         isCancellationRequested: false,
-        onCancellationRequested: (f: (e?: any) => any, ...args: any[]) => {
-            this.listeners.push((e) => f(e, ...args));
+        onCancellationRequested: (f: (e?: any) => any) => {
+            this.listeners.push((e) => f(e));
         },
     };
 
@@ -79,6 +81,7 @@ function printHelp() {
             "  - Run 'databricks-execute init' to create or update databricks.yml with a dbexec target.",
             "  - .ipynb and 'Databricks notebook source' files run as workflow notebooks (Jobs API).",
             "  - Positional args and --env are only supported for plain .py files.",
+            "  - --widget sets notebook widget/base parameters and is only supported for notebook runs.",
             "  - Long runs are supported: the CLI keeps waiting and prints periodic progress heartbeats.",
             "",
             "Options:",
@@ -91,6 +94,7 @@ function printHelp() {
             "  --no-start-cluster     Do not auto-start a stopped cluster",
             "  --no-sync              Skip 'databricks bundle sync' step",
             "  --env KEY=VALUE        Inject env var for the remote process (repeatable)",
+            "  --widget KEY=VALUE     Set notebook widget/base parameter (repeatable)",
             "  --help                 Show help",
         ].join("\n")
     );
@@ -112,7 +116,11 @@ function parseArgs(argv: string[]): {
     const scriptArgs =
         delimiterIndex === -1 ? [] : argv.slice(delimiterIndex + 1);
 
-    const options: CliOptions = {env: {}, startCluster: true};
+    const options: CliOptions = {
+        env: {},
+        widgetParams: {},
+        startCluster: true,
+    };
     let filePath: string | undefined;
 
     for (let i = 0; i < cliArgs.length; i++) {
@@ -163,14 +171,13 @@ function parseArgs(argv: string[]): {
                 options.noSync = true;
                 break;
             case "--env": {
-                const kv = next();
-                const eq = kv.indexOf("=");
-                if (eq <= 0) {
-                    fail("Invalid --env value (expected KEY=VALUE)");
-                }
-                const key = kv.slice(0, eq);
-                const value = kv.slice(eq + 1);
+                const {key, value} = parseKeyValueOption(next(), "--env");
                 options.env[key] = value;
+                break;
+            }
+            case "--widget": {
+                const {key, value} = parseKeyValueOption(next(), "--widget");
+                options.widgetParams[key] = value;
                 break;
             }
             default:
@@ -323,6 +330,11 @@ async function main() {
             ? await readFirstLine(absoluteFilePath)
             : undefined;
     const notebookType = detectNotebookType(fileExt, firstLine);
+    if (!notebookType && Object.keys(options.widgetParams).length > 0) {
+        fail(
+            "--widget is only supported for notebooks (.ipynb or 'Databricks notebook source' files)."
+        );
+    }
 
     const bundleRoot =
         (await findBundleRoot(path.dirname(absoluteFilePath))) ??
@@ -538,7 +550,7 @@ async function main() {
     if (notebookType) {
         if (scriptArgs.length > 0) {
             fail(
-                "Notebook mode does not support positional args. Use widgets/base_parameters in the notebook instead."
+                "Notebook mode does not support positional args. Use --widget KEY=VALUE to set notebook widget/base parameters instead."
             );
         }
         if (Object.keys(options.env).length > 0) {
@@ -566,7 +578,7 @@ async function main() {
             task_key: "databricks_execute_notebook",
             notebook_task: {
                 notebook_path: remoteNotebookPath,
-                base_parameters: {},
+                base_parameters: options.widgetParams,
             },
             timeout_seconds: 0,
         };
@@ -583,7 +595,7 @@ async function main() {
             submitRequest.environments = [
                 {
                     environment_key: "databricks_execute_serverless",
-                    spec: {client: "1"},
+                    spec: {environment_version: "5"},
                 },
             ];
         }
@@ -704,9 +716,11 @@ async function main() {
             }
         } catch {}
 
+        const normalizedResultState = resultState?.toUpperCase();
         const exitCode =
             cts.token.isCancellationRequested &&
-            (resultState === "CANCELED" || resultState === "CANCELLED")
+            (normalizedResultState === "CANCELED" ||
+                normalizedResultState === "CANCELLED")
                 ? 130
                 : resultState === "SUCCESS"
                   ? 0

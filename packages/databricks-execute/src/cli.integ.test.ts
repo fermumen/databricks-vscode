@@ -145,6 +145,24 @@ test(
             "utf8"
         );
 
+        await fs.writeFile(
+            path.join(tmp, "widgets.py"),
+            [
+                "# Databricks notebook source",
+                "",
+                "# COMMAND ----------",
+                'dbutils.widgets.text("greeting", "hello")',
+                'dbutils.widgets.text("subject", "world")',
+                "",
+                "# COMMAND ----------",
+                "import json",
+                "",
+                'print(json.dumps({"greeting": dbutils.widgets.get("greeting"), "subject": dbutils.widgets.get("subject")}, sort_keys=True))',
+                "",
+            ].join("\n"),
+            "utf8"
+        );
+
         const cliPath = path.resolve(__dirname, "..", "dist", "cli.js");
         const maybeStartCluster =
             process.env.DATABRICKS_EXECUTE_INTEG_START_CLUSTER === "1"
@@ -167,6 +185,28 @@ test(
             notebookRun.stdout,
             /(^|\n)2(\n|$)/u,
             `expected expression output '2' in stdout:\n${notebookRun.stdout}`
+        );
+
+        const widgetRun = run(process.execPath, [
+            cliPath,
+            path.join(tmp, "widgets.py"),
+            "--target",
+            "dev",
+            "--widget",
+            "greeting=hello",
+            "--widget",
+            "subject=widgets",
+            ...maybeStartCluster,
+        ]);
+        assert.equal(
+            widgetRun.code,
+            0,
+            `widget notebook run failed:\n${widgetRun.stdout}\n${widgetRun.stderr}`
+        );
+        assert.match(
+            widgetRun.stdout,
+            /\{"greeting": "hello", "subject": "widgets"\}/u,
+            `expected widget output in stdout:\n${widgetRun.stdout}`
         );
 
         const plainRun = run(process.execPath, [

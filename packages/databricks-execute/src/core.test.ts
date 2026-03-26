@@ -12,6 +12,7 @@ import {
     localPathToRemoteWorkspacePath,
     normalizeHost,
     normalizeWorkspacePath,
+    parseKeyValueOption,
     remoteWorkspacePathToLocalPath,
     workspacePrefixedPath,
 } from "./core";
@@ -92,6 +93,29 @@ test("ensureValidEnvVars enforces shell-like KEY names", () => {
         // eslint-disable-next-line @typescript-eslint/naming-convention
         () => ensureValidEnvVars({"BAD-NAME": "x"}),
         /Invalid environment variable/
+    );
+});
+
+test("parseKeyValueOption splits KEY=VALUE pairs", () => {
+    assert.deepEqual(parseKeyValueOption("name=databricks", "--widget"), {
+        key: "name",
+        value: "databricks",
+    });
+    assert.deepEqual(parseKeyValueOption("empty=", "--widget"), {
+        key: "empty",
+        value: "",
+    });
+    assert.deepEqual(parseKeyValueOption("a=b=c", "--widget"), {
+        key: "a",
+        value: "b=c",
+    });
+    assert.throws(
+        () => parseKeyValueOption("missing", "--widget"),
+        /Invalid --widget value/
+    );
+    assert.throws(
+        () => parseKeyValueOption("=missing-key", "--widget"),
+        /Invalid --widget value/
     );
 });
 

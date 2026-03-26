@@ -31,6 +31,7 @@ Use notebooks for anything that is “standard Databricks work”:
 Run:
 - `databricks-execute path/to/notebook.ipynb --target dev`
 - `databricks-execute path/to/notebook_source.py --target dev` (first line is `# Databricks notebook source`)
+- `databricks-execute path/to/notebook_source.py --target dev --widget greeting=hello --widget name=databricks`
 
 ### Quick iterations: plain `.py` files
 
@@ -41,7 +42,7 @@ Run:
 
 Notes:
 - Script args (`-- arg1 arg2`) and `--env KEY=VALUE` work only for **plain** `.py` files.
-- Notebook runs currently don’t accept positional args or `--env` (use widgets / `base_parameters` patterns inside the notebook instead).
+- Notebook runs don’t accept positional args or `--env`; use repeatable `--widget KEY=VALUE` to populate notebook widget / `base_parameters` values instead.
 - Long-running runs are supported. `databricks-execute` waits for completion and prints heartbeat status logs while waiting.
 
 ## Databricks notebook source:
@@ -104,6 +105,7 @@ Guidance for agents:
 ## Common commands
 
 - Run notebook: `databricks-execute path/to/notebook.ipynb --target dev`
+- Run notebook with widget parameters: `databricks-execute path/to/notebook_source.py --target dev --widget greeting=hello --widget name=databricks`
 - Run plain Python: `databricks-execute path/to/script.py --target dev -- arg1 arg2`
 - Use a specific cluster by name/id: `databricks-execute path/to/script.py --target dev --cluster <cluster-name-or-id>`
 - Stopped clusters are started automatically; to disable: `databricks-execute path/to/script.py --target dev --no-start-cluster`

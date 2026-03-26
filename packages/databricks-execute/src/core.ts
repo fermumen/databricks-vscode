@@ -30,6 +30,21 @@ export function ensureValidEnvVars(envVars: Record<string, string>) {
     }
 }
 
+export function parseKeyValueOption(
+    raw: string,
+    flagName: string
+): {key: string; value: string} {
+    const eq = raw.indexOf("=");
+    if (eq <= 0) {
+        throw new Error(`Invalid ${flagName} value (expected KEY=VALUE)`);
+    }
+
+    return {
+        key: raw.slice(0, eq),
+        value: raw.slice(eq + 1),
+    };
+}
+
 export function escapePythonString(str: string): string {
     return str.replace(/\\/gu, "\\\\").replace(/'/gu, "\\'");
 }

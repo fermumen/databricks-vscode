@@ -56,7 +56,7 @@ node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute build
 node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute test
 
 # 5. Smoke test against exec-example/
-node packages/databricks-execute/dist/cli.js exec-example/example_dbs.py --target dev --no-sync
+node packages/databricks-execute/dist/cli.js exec-example/widget_params_example.py --target dev --widget greeting=hello --widget name=smoke
 
 # 6. Complete the merge
 git commit

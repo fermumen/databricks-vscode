@@ -92,7 +92,7 @@ DATABRICKS_EXECUTE_INTEG=1 \
 
 Manual smoke commands (using a real bundle in the repo):
 - Notebook:
-  - `databricks-execute exec-example/test.ipynb --target dev`
+  - `databricks-execute exec-example/widget_params_example.py --target dev --widget greeting=hello --widget name=smoke`
 - Plain python:
   - `databricks-execute exec-example/example_dbs.py --target dev`
 
@@ -127,4 +127,3 @@ If upstream `ErrorParser.ts` changes:
 - Keep notebook-vs-script behavior consistent:
   - `.ipynb` and “Databricks notebook source” => workflow notebook task
   - plain `.py` => command execution
-

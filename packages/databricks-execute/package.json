@@ -1,6 +1,6 @@
 {
     "name": "@fermumen/databricks-execute",
-    "version": "2.14.0",
+    "version": "2.15.1",
     "description": "CLI to sync and execute a local file on Databricks (mirrors VS Code extension runFile behavior).",
     "license": "LicenseRef-LICENSE",
     "homepage": "https://github.com/fermumen/databricks-vscode/tree/main/packages/databricks-execute",
@@ -20,6 +20,7 @@
         "LICENSE",
         "NOTICE",
         "README.md",
+        "CHANGELOG.md",
         "example_usage.md"
     ],
     "scripts": {
@@ -27,9 +28,9 @@
         "build:binary": "node scripts/build-binary.js",
         "watch": "node scripts/build.js --watch",
         "clean": "rm -rf dist node_modules",
-        "fix": "eslint src --ext ts --fix && prettier src README.md package.json tsconfig.json --write",
+        "fix": "eslint src --ext ts --fix && prettier src README.md CHANGELOG.md package.json tsconfig.json --write",
         "prepack": "node scripts/build.js",
-        "test:lint": "eslint src --ext ts && prettier src README.md package.json tsconfig.json -c",
+        "test:lint": "eslint src --ext ts && prettier src README.md CHANGELOG.md package.json tsconfig.json -c",
         "test:integ": "node scripts/build.js && node scripts/test-integ.js",
         "test:unit": "node scripts/test.js",
         "test": "yarn run test:lint && yarn run test:unit"

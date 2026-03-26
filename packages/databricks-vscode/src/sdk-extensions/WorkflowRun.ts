@@ -93,7 +93,7 @@ export class WorkflowRun {
         const submitRunOptions: SubmitRun = {tasks: [task]};
         if (task["environment_key"]) {
             submitRunOptions.environments = [
-                {environment_key: task["environment_key"], spec: {client: "1"}},
+                {environment_key: task["environment_key"], spec: {environment_version: "5"}},
             ];
         }
         const run = await this.submitRun(client, submitRunOptions);
