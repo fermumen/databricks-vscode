@@ -1,4 +1,4 @@
-# Release: v2.15.1
+# Release: v2.15.2
 
 ## packages/databricks-execute
 
