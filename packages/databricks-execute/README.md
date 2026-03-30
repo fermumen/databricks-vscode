@@ -107,6 +107,7 @@ databricks-execute path/to/notebook.py --target dev --widget greeting=hello --wi
 Notes:
 
 -   Positional args (`-- arg1 arg2`) and `--env KEY=VALUE` are only supported in Command Execution mode (plain `.py` files).
+-   `--keep-context` leaves a newly created Command Execution context alive and prints its id; pass that id back with `--context-id <id>` to reuse interpreter state across plain `.py` runs.
 -   Repeat `--widget KEY=VALUE` to populate notebook widget / `base_parameters` values for notebook runs.
 -   Notebook output is printed by extracting text stdout/stderr (and tracebacks) from the exported run. For rich outputs (tables/plots/HTML), open the run URL in a browser.
 -   Long-running executions are supported. The CLI waits for completion and prints periodic heartbeat status lines while the run is active.
@@ -116,6 +117,22 @@ Notes:
 All configuration is read from `databricks.yml` (via `databricks bundle validate`): `workspace.host`, workspace file path, and `cluster_id`.
 
 If the configured cluster is stopped, it is started automatically. Pass `--no-start-cluster` to disable this.
+
+### Reusing a Python execution context
+
+For REPL-like plain `.py` workflows, create and keep a context alive:
+
+```bash
+databricks-execute path/to/snippet.py --target dev --keep-context
+```
+
+That prints an `Execution context ID: ...` line. Reuse it on later runs:
+
+```bash
+databricks-execute path/to/next-snippet.py --target dev --context-id <id>
+```
+
+These flags are only supported for plain `.py` files, not notebooks.
 
 ## Quick start with `init`
 

@@ -37,6 +37,17 @@ export class ExecutionContext {
         return context;
     }
 
+    static fromId(
+        client: ApiClient,
+        cluster: Cluster,
+        id: string,
+        language: compute.Language = "python"
+    ): ExecutionContext {
+        const context = new ExecutionContext(client, cluster, language);
+        context.id = id;
+        return context;
+    }
+
     async execute(
         command: string,
         onStatusUpdate: StatusUpdateListener = () => {},

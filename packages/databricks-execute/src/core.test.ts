@@ -137,6 +137,34 @@ test("compileBootstrapCommand injects argv and env", () => {
     assert.match(out, /env = \{"HELLO":"world"\}/);
 });
 
+test("compileBootstrapCommand can persist globals for reused contexts", () => {
+    const template = [
+        'python_file = "PYTHON_FILE"',
+        'repo_path = "REPO_PATH"',
+        "args = []",
+        "env = {}",
+        'runpy.run_path(python_file, run_name="__main__", init_globals=user_ns)',
+        "",
+    ].join("\n");
+    const out = compileBootstrapCommand(template, {
+        remotePythonFile: "/Workspace/Users/me/project/a.py",
+        remoteRepoRoot: "/Workspace/Users/me/project",
+        argv: ["/Workspace/Users/me/project/a.py"],
+        envVars: {},
+        persistContextState: true,
+    });
+
+    assert.match(out, /_databricks_execute_globals/u);
+    assert.match(
+        out,
+        /exec\(compile\(f\.read\(\), python_file, "exec"\), _globals, _globals\)/u
+    );
+    assert.doesNotMatch(
+        out,
+        /runpy\.run_path\(python_file, run_name="__main__", init_globals=user_ns\)/u
+    );
+});
+
 test("isLikelyClusterId matches common cluster id format", () => {
     assert.equal(isLikelyClusterId("0123-456789-abcde123"), true);
     assert.equal(isLikelyClusterId("My Cluster"), false);

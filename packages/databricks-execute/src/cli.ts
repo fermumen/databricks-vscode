@@ -14,7 +14,11 @@ import {
 
 import bootstrapTemplate from "../../databricks-vscode/resources/python/bootstrap.py";
 import {parseErrorResult} from "../../databricks-vscode/src/run/ErrorParser";
-import {Cluster, WorkflowRun} from "../../databricks-vscode/src/sdk-extensions";
+import {
+    Cluster,
+    ExecutionContext,
+    WorkflowRun,
+} from "../../databricks-vscode/src/sdk-extensions";
 import {
     coalesce,
     compileBootstrapCommand,
@@ -40,7 +44,8 @@ type CliOptions = {
     cluster?: string;
     serverless?: boolean;
     startCluster: boolean;
-    noSync?: boolean;
+    contextId?: string;
+    keepContext?: boolean;
     env: Record<string, string>;
     widgetParams: Record<string, string>;
 };
@@ -92,7 +97,8 @@ function printHelp() {
             "  --serverless           [Experimental] Use serverless compute (notebooks only; no cluster needed)",
             "  --start-cluster        Start cluster if not running (default: on)",
             "  --no-start-cluster     Do not auto-start a stopped cluster",
-            "  --no-sync              Skip 'databricks bundle sync' step",
+            "  --context-id <id>      Reuse an existing execution context (plain .py only)",
+            "  --keep-context         Keep created execution context alive and print its id (plain .py only)",
             "  --env KEY=VALUE        Inject env var for the remote process (repeatable)",
             "  --widget KEY=VALUE     Set notebook widget/base parameter (repeatable)",
             "  --help                 Show help",
@@ -167,8 +173,11 @@ function parseArgs(argv: string[]): {
             case "--no-start-cluster":
                 options.startCluster = false;
                 break;
-            case "--no-sync":
-                options.noSync = true;
+            case "--context-id":
+                options.contextId = next();
+                break;
+            case "--keep-context":
+                options.keepContext = true;
                 break;
             case "--env": {
                 const {key, value} = parseKeyValueOption(next(), "--env");
@@ -330,10 +339,20 @@ async function main() {
             ? await readFirstLine(absoluteFilePath)
             : undefined;
     const notebookType = detectNotebookType(fileExt, firstLine);
+    const isPlainPythonFile = !notebookType && fileExt.toLowerCase() === "py";
     if (!notebookType && Object.keys(options.widgetParams).length > 0) {
         fail(
             "--widget is only supported for notebooks (.ipynb or 'Databricks notebook source' files)."
         );
+    }
+    if (options.contextId && options.keepContext) {
+        fail("--context-id and --keep-context cannot be used together.");
+    }
+    if (options.contextId && !isPlainPythonFile) {
+        fail("--context-id is only supported for plain .py files.");
+    }
+    if (options.keepContext && !isPlainPythonFile) {
+        fail("--keep-context is only supported for plain .py files.");
     }
 
     const bundleRoot =
@@ -453,23 +472,21 @@ async function main() {
         );
     }
 
-    if (!options.noSync) {
-        nowPrefix("Uploading assets to Databricks workspace...");
-        const syncArgs = [
-            "bundle",
-            "sync",
-            ...(target ? ["--target", target] : []),
-            "--output",
-            "text",
-        ];
-        const sync = await runDatabricksCli(syncArgs, {
-            cwd: bundleRoot,
-            env,
-            inherit: true,
-        });
-        if (sync.code !== 0) {
-            fail("bundle sync failed.");
-        }
+    nowPrefix("Uploading assets to Databricks workspace...");
+    const syncArgs = [
+        "bundle",
+        "sync",
+        ...(target ? ["--target", target] : []),
+        "--output",
+        "text",
+    ];
+    const sync = await runDatabricksCli(syncArgs, {
+        cwd: bundleRoot,
+        env,
+        inherit: true,
+    });
+    if (sync.code !== 0) {
+        fail("bundle sync failed.");
     }
 
     // If no explicit token was provided, resolve it from the Databricks CLI's
@@ -737,13 +754,35 @@ async function main() {
         );
     }
 
-    nowPrefix(`Creating execution context on cluster ${cluster!.id} ...`);
-    const executionContext = await cluster!.createExecutionContext("python");
-    cts.token.onCancellationRequested(async () => {
-        try {
-            await executionContext.destroy();
-        } catch {}
-    });
+    const shouldKeepExecutionContext =
+        Boolean(options.contextId) || options.keepContext === true;
+    let executionContext: ExecutionContext;
+    if (options.contextId) {
+        nowPrefix(
+            `Reusing execution context ${options.contextId} on cluster ${
+                cluster!.id
+            } ...`
+        );
+        executionContext = ExecutionContext.fromId(
+            apiClient,
+            cluster!,
+            options.contextId,
+            "python"
+        );
+    } else {
+        nowPrefix(`Creating execution context on cluster ${cluster!.id} ...`);
+        executionContext = await cluster!.createExecutionContext("python");
+        if (options.keepContext && executionContext.id) {
+            nowPrefix(`Execution context ID: ${executionContext.id}`);
+        }
+    }
+    if (!shouldKeepExecutionContext) {
+        cts.token.onCancellationRequested(async () => {
+            try {
+                await executionContext.destroy();
+            } catch {}
+        });
+    }
 
     try {
         nowPrefix(
@@ -755,6 +794,7 @@ async function main() {
             remoteRepoRoot,
             argv: [remotePythonFile, ...scriptArgs],
             envVars: options.env,
+            persistContextState: shouldKeepExecutionContext,
         });
 
         let lastCommandStatus: string | undefined;
@@ -814,7 +854,9 @@ async function main() {
         nowPrefix(`Done (took ${Date.now() - startedAt}ms)`);
         process.exitCode = exitCode;
     } finally {
-        await executionContext.destroy();
+        if (!shouldKeepExecutionContext) {
+            await executionContext.destroy();
+        }
     }
 }
 

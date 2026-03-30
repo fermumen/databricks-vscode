@@ -105,6 +105,7 @@ export function compileBootstrapCommand(
         remoteRepoRoot: string;
         argv: string[];
         envVars: Record<string, string>;
+        persistContextState?: boolean;
     }
 ): string {
     ensureValidEnvVars(opts.envVars);
@@ -124,6 +125,25 @@ export function compileBootstrapCommand(
         "env = {}",
         `env = ${JSON.stringify(opts.envVars)}`
     );
+
+    if (opts.persistContextState) {
+        bootstrap = bootstrap.replace(
+            'runpy.run_path(python_file, run_name="__main__", init_globals=user_ns)',
+            [
+                '_globals = globals().get("_databricks_execute_globals")',
+                "if _globals is None:",
+                "    _globals = {}",
+                '    globals()["_databricks_execute_globals"] = _globals',
+                "_globals.update(user_ns)",
+                '_globals["__name__"] = "__main__"',
+                '_globals["__file__"] = python_file',
+                '_globals["__package__"] = None',
+                '_globals["__cached__"] = None',
+                'with open(python_file, "rb") as f:',
+                '    exec(compile(f.read(), python_file, "exec"), _globals, _globals)',
+            ].join("\n")
+        );
+    }
 
     return bootstrap;
 }

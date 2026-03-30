@@ -146,6 +146,18 @@ test(
         );
 
         await fs.writeFile(
+            path.join(tmp, "repl_init.py"),
+            "counter = 41\nprint(counter)\n",
+            "utf8"
+        );
+
+        await fs.writeFile(
+            path.join(tmp, "repl_next.py"),
+            "counter += 1\nprint(counter)\n",
+            "utf8"
+        );
+
+        await fs.writeFile(
             path.join(tmp, "widgets.py"),
             [
                 "# Databricks notebook source",
@@ -214,7 +226,6 @@ test(
             path.join(tmp, "plain.py"),
             "--target",
             "dev",
-            "--no-sync",
             ...maybeStartCluster,
         ]);
         assert.equal(
@@ -226,6 +237,53 @@ test(
             plainRun.stdout,
             /hello from plain/u,
             `expected 'hello from plain' in stdout:\n${plainRun.stdout}`
+        );
+
+        const replInitRun = run(process.execPath, [
+            cliPath,
+            path.join(tmp, "repl_init.py"),
+            "--target",
+            "dev",
+            "--keep-context",
+            ...maybeStartCluster,
+        ]);
+        assert.equal(
+            replInitRun.code,
+            0,
+            `repl init run failed:\n${replInitRun.stdout}\n${replInitRun.stderr}`
+        );
+        assert.match(
+            replInitRun.stdout,
+            /(^|\n)41(\n|$)/u,
+            `expected '41' in stdout:\n${replInitRun.stdout}`
+        );
+
+        const contextIdMatch = replInitRun.stdout.match(
+            /Execution context ID: (\S+)/u
+        );
+        assert.ok(
+            contextIdMatch,
+            `expected execution context id in stdout:\n${replInitRun.stdout}`
+        );
+
+        const replNextRun = run(process.execPath, [
+            cliPath,
+            path.join(tmp, "repl_next.py"),
+            "--target",
+            "dev",
+            "--context-id",
+            contextIdMatch[1],
+            ...maybeStartCluster,
+        ]);
+        assert.equal(
+            replNextRun.code,
+            0,
+            `repl follow-up run failed:\n${replNextRun.stdout}\n${replNextRun.stderr}`
+        );
+        assert.match(
+            replNextRun.stdout,
+            /(^|\n)42(\n|$)/u,
+            `expected '42' in stdout:\n${replNextRun.stdout}`
         );
     }
 );
