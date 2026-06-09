@@ -63,14 +63,17 @@ Actions:
   - `WorkflowRun.submitRun`, `WorkflowRun.wait`, `WorkflowRun.export`, `WorkflowRun.getOutput`
   - `ExecutionContext.execute`
 
-### 3) Update the vendored Databricks SDK (if needed)
+### 3) Update upstream-dependent npm packages (if needed)
 
-The CLI bundles the vendored Node SDK from `vendor/databricks-sdk.tgz` at build time.
+The CLI imports the Databricks Node SDK from the public npm package `@databricks/sdk-experimental` and bundles it into `dist/cli.js` at build time. It does **not** use a vendored SDK tarball.
 
-If upstream updates that tarball or the SDK shape changes:
-- Replace/update `vendor/databricks-sdk.tgz` at repo root.
-- Ensure `packages/databricks-execute/scripts/build.js` can still extract and resolve it.
+If upstream changes SDK usage or requires a newer SDK:
+- Update `@databricks/sdk-experimental` in `packages/databricks-execute/package.json`.
+- Run `node .yarn/releases/yarn-3.2.1.cjs install` from the repo root to refresh `yarn.lock`.
+- Confirm `packages/databricks-execute/scripts/build.js` still bundles SDK code correctly and only externalizes runtime packages that must remain install-time dependencies.
 - Rebuild the CLI and run unit tests.
+
+When reviewing dependency updates, keep `dependencies` limited to packages needed after npm install, and keep build/test-only packages in `devDependencies`. Because the published package contains the bundled CLI plus runtime externals, every package listed in `build.js` `external` should remain in `dependencies`.
 
 ### 4) Run tests (minimum bar)
 

@@ -1,3 +1,44 @@
+# Release: v2.11.0
+
+## packages/databricks-vscode
+
+## (2026-06-04)
+
+-   New feature: Unity catalog explorer
+-   New feature: Workspace filesystem explorer
+-   Add support for SPOG host URLs
+-   Bump Databricks CLI version to 1.2.0
+
+# Release: v2.10.8
+
+## packages/databricks-vscode
+
+## (2026-05-20)
+
+-   Bump Databricks JS SDK to 0.17.0
+
+# Release: v2.10.7
+
+## packages/databricks-vscode
+
+## (2026-05-07)
+
+-   Add remote mode for initial Remote Development compatibility (#1861) ([9e768db](https://github.com/databricks/databricks-vscode/commit/9e768db))
+-   Rename "Databricks Asset Bundles" → "Declarative Automation Bundles" (#1864) ([62a94e1](https://github.com/databricks/databricks-vscode/commit/62a94e1))
+-   Preserve profile name in Databricks CLI auth provider (#1877) ([3f54441](https://github.com/databricks/databricks-vscode/commit/3f54441))
+-   Fix new profile sign in using already existing host under different profile (#1893) ([c4c25fb](https://github.com/databricks/databricks-vscode/commit/c4c25fb))
+-   Include profiles with `account_id` in `listProfiles` results (#1894) ([d6e2e5d](https://github.com/databricks/databricks-vscode/commit/d6e2e5d))
+-   Update minimal python and dbconnect versions for serverless (#1884) ([5a1a1d5](https://github.com/databricks/databricks-vscode/commit/5a1a1d5))
+-   Update Databricks CLI to v0.297.2 (#1882) ([ea77424](https://github.com/databricks/databricks-vscode/commit/ea77424)) — see the [CLI release notes](https://github.com/databricks/cli/releases) for changes since v0.286.0
+
+# Release: v2.10.6
+
+## packages/databricks-vscode
+
+## (2026-03-16)
+
+-   Handle 404 from @databricks/sdk-experimental (#1855) ([0093352](https://github.com/databricks/databricks-vscode/commit/0093352)), closes [#1843](https://github.com/databricks/databricks-vscode/issues/1843) [#1853](https://github.com/databricks/databricks-vscode/issues/1853) [#1856](https://github.com/databricks/databricks-vscode/issues/1856)
+
 # Release: v2.10.5
 
 ## packages/databricks-vscode
@@ -100,7 +141,7 @@
 ## (2025-03-04)
 
 -   Add Documentation panel
--   Ensure run button is visibilite for notebook editors
+-   Ensure run button is visible for notebook editors
 -   Properly terminate debug session if the workflow webview was closed
 -   Update Databricks CLI to v0.242.0
 
@@ -349,7 +390,7 @@
 
 -   Feature: Add a interface for specifying bundle variables.
 -   Feature: Allow opting out of cluster override and make it more visible in UI.
--   Feature: Update databricks CLI to v0.218.0. Databricks Asset Bundles (DABs) are now GA!
+-   Feature: Update databricks CLI to v0.218.0. Declarative Automation Bundles (DABs) are now GA!
 -   Feature: Add UI and wizard to help manage virtual environments and Databricks Connect v2 versions.
 
 # Release: v2.0.4-preview
@@ -387,7 +428,7 @@
 
 ## <small>v2.0.1-preview (2024-03-07)</small>
 
--   Databricks Asset Bundles (DABs) are now available in VS Code which allows you to:
+-   Declarative Automation Bundles (DABs) are now available in VS Code which allows you to:
     -   easily set up, author and run Databricks projects from VS Code.
     -   leverage the DABs Resource Explorer so you can easily see all your Jobs and Pipelines in one place and run them with one click.
 -   All our run methods are now consolidated into 1 run menu.
@@ -565,7 +606,7 @@ CLI Changes
 
 -   Fix: Fix error handling when repos limit is reached, fixes [#726](https://github.com/databricks/databricks-vscode/issues/726)
 -   Patch: Port error handling code from GO SDK
--   Telemety: Record SDK AuthType instead of VSCode AuthType
+-   Telemetry: Record SDK AuthType instead of VSCode AuthType
 -   Fix: Bump dependencies
 -   Feature: Support all authentication methods for interactive debugging with dbconnect.
 -   Fix: Improve error message to switch from repos to workspace FS.
@@ -598,7 +639,7 @@ CLI Changes
 ## <small>0.3.11 (2023-04-25)</small>
 
 -   Feature: All customers should start seeing prompt for switching to using Workspace as sync destination.
--   Feature: Move autcompletion for globals to `__builtins__.py` from internal stubs.
+-   Feature: Move autocompletion for globals to `__builtins__.py` from internal stubs.
 -   Fix: Prepend cwd to PYTHONPATH so that local changes take precedence over installed libraries, fixes [#673](https://github.com/databricks/databricks-vscode/issues/673)
 
 # Release: v0.3.10
@@ -674,7 +715,7 @@ CLI Changes
 -   Feature: Add `databricks.overrideDatabricksConfigFile` VS Code setting to override the location of `.databrickscfg` file, closes [#518](https://github.com/databricks/databricks-vscode/issues/518)
 -   Fix: jump-to-error links were not displayed when `Run File on Databricks` runs failed
 -   Fix: sync was hanging when moving files
--   Fix: Files with certain special charecters (such as #-hash) in their names were not synced correctly.
+-   Fix: Files with certain special characters (such as #-hash) in their names were not synced correctly.
 
 # Release: v0.3.2
 
@@ -848,7 +889,7 @@ CLI Changes
 -   Added command `Open full logs` to open the log output folder
 -   Turn filtering of accessible cluster off by default. Can be enabled using the setting `databricks.clusters.onlyShowAccessibleClusters`
 -   Allow running ipynb files as workflows
--   Improve handling cases where the user doesn't hve administrator permissions in the Databricks workspace
+-   Improve handling cases where the user doesn't have administrator permissions in the Databricks workspace
 -   Show warning when the name of the selected Databricks Repo doesn't match the local workspace name
 -   Add setting `databricks.bricks.verboseMode` to show debug logs for the sync command
 

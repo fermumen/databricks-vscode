@@ -65,7 +65,7 @@ git commit
 ### What to watch for
 
 - **`yarn.lock`** — always conflicts; resolve with `git checkout --theirs` then `yarn install`.
-- **SDK changes** — `cli.ts` imports from `@databricks/sdk-experimental` and from `packages/databricks-vscode/src/sdk-extensions`. If upstream changes those APIs (exports, method signatures), update `cli.ts` accordingly.
+- **SDK changes** — `cli.ts` imports from `@databricks/sdk-experimental` and from `packages/databricks-vscode/src/sdk-extensions`. If upstream changes those APIs (exports, method signatures), update `cli.ts` and, if needed, bump the public npm dependency in `packages/databricks-execute/package.json` followed by a root `node .yarn/releases/yarn-3.2.1.cjs install`.
 - **`bootstrap.py` / `ErrorParser.ts`** — also imported by `cli.ts`. Check if upstream modified them.
 - **Quick check**: `git log upstream/main --since="<last-merge-date>" -- packages/databricks-vscode/src/sdk-extensions packages/databricks-vscode/src/run/ErrorParser.ts packages/databricks-vscode/resources/python/bootstrap.py` to see if our imported files changed.
 
@@ -76,4 +76,4 @@ git commit
 - Execution mirrors the VS Code extension behavior: `bundle sync` then run via the Command Execution API using the same `bootstrap.py` and error parsing.
 - Core pure helpers live in `src/core.ts`; add tests in `src/core.test.ts` using Node’s built-in `node:test` runner.
 - Node version: tests use `node:test` (Node 18+).
-- Uses `@databricks/sdk-experimental` (public npm package), bundled into `dist/cli.js` at build time by esbuild.
+- Uses `@databricks/sdk-experimental` (public npm package), bundled into `dist/cli.js` at build time by esbuild. Keep runtime externals from `scripts/build.js` in `dependencies`; build/test-only packages belong in `devDependencies`.

@@ -7,6 +7,7 @@ import process from "node:process";
 import type {CancellationToken} from "@databricks/sdk-experimental";
 import {
     ApiClient,
+    ApiError,
     Time,
     TimeUnits,
     WorkspaceClient,
@@ -109,6 +110,64 @@ function printHelp() {
 function fail(message: string): never {
     process.exitCode = 1;
     throw new Error(message);
+}
+
+type NormalizedApiErrorResponse = {
+    logs?: string;
+    error?: string;
+    [key: string]: unknown;
+};
+
+function normalizeApiErrorResponse(
+    e: unknown
+): NormalizedApiErrorResponse | undefined {
+    if (!(e instanceof ApiError)) {
+        return undefined;
+    }
+
+    const response = e.response;
+    if (typeof response === "string") {
+        try {
+            return JSON.parse(response) as NormalizedApiErrorResponse;
+        } catch {
+            return undefined;
+        }
+    }
+
+    if (response && typeof response === "object") {
+        return response as NormalizedApiErrorResponse;
+    }
+
+    return undefined;
+}
+
+function printApiErrorDetails(e: unknown): boolean {
+    const response = normalizeApiErrorResponse(e);
+    if (!response) {
+        return false;
+    }
+
+    let printed = false;
+    if (response.logs) {
+        // eslint-disable-next-line no-console
+        process.stdout.write(
+            response.logs.endsWith("\n") ? response.logs : `${response.logs}\n`
+        );
+        printed = true;
+    }
+    if (response.error) {
+        // eslint-disable-next-line no-console
+        console.error(response.error);
+        printed = true;
+    }
+    const errorTrace = response["error_trace"];
+    if (typeof errorTrace === "string") {
+        // eslint-disable-next-line no-console
+        console.error(errorTrace);
+        printed = true;
+    }
+
+    return printed;
 }
 
 function parseArgs(argv: string[]): {
@@ -457,6 +516,13 @@ async function main() {
         validateJson?.workspace?.workspace_host as string | undefined
     );
     const host = coalesce(env.DATABRICKS_HOST, hostFromBundle);
+    const workspaceIdFromBundle = coalesce(
+        validateJson?.workspace?.workspace_id as string | undefined,
+        validateJson?.workspace?.workspaceId as string | undefined
+    );
+    if (workspaceIdFromBundle && !env.DATABRICKS_WORKSPACE_ID) {
+        env.DATABRICKS_WORKSPACE_ID = workspaceIdFromBundle;
+    }
     if (!host) {
         fail(
             "Missing Databricks host. Provide --host, set DATABRICKS_HOST, or set workspace.host in the bundle target."
@@ -612,14 +678,17 @@ async function main() {
             submitRequest.environments = [
                 {
                     environment_key: "databricks_execute_serverless",
-                    spec: {environment_version: "5"},
+                    spec: {client: "1"},
                 },
             ];
         }
-        const run = await WorkflowRun.submitRun(
-            apiClient,
-            submitRequest as any
-        );
+        let run: WorkflowRun;
+        try {
+            run = await WorkflowRun.submitRun(apiClient, submitRequest as any);
+        } catch (e) {
+            printApiErrorDetails(e);
+            throw e;
+        }
         /* eslint-enable @typescript-eslint/naming-convention */
 
         if (run.runPageUrl) {
@@ -702,7 +771,9 @@ async function main() {
                     }
                 }
             }
-        } catch {}
+        } catch (e) {
+            printApiErrorDetails(e);
+        }
 
         try {
             const output = await run.getOutput();
@@ -731,7 +802,9 @@ async function main() {
                 console.error((output as any).error_trace);
                 printedError = true;
             }
-        } catch {}
+        } catch (e) {
+            printApiErrorDetails(e);
+        }
 
         const normalizedResultState = resultState?.toUpperCase();
         const exitCode =

@@ -21,3 +21,6 @@ packages/databricks-sdk-js/src/config/testdata/azure/Library
 *.js.map
 tsconfig.tsbuildinfo
 dbx-main
+
+# Local docs (not for version control)
+docs/
