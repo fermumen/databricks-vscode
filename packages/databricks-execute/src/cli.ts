@@ -488,7 +488,7 @@ async function main() {
     let validateJson: any;
     try {
         validateJson = JSON.parse(validate.stdout);
-    } catch (e) {
+    } catch {
         const start = validate.stdout.indexOf("{");
         const end = validate.stdout.lastIndexOf("}");
         if (start !== -1 && end !== -1 && end > start) {
