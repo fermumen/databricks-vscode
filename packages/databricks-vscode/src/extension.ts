@@ -75,6 +75,7 @@ import {BundleVariableTreeDataProvider} from "./ui/bundle-variables/BundleVariab
 import {ConfigurationTreeViewManager} from "./ui/configuration-view/ConfigurationTreeViewManager";
 import {getCLIDependenciesEnvVars} from "./utils/envVarGenerators";
 import {EnvironmentCommands} from "./language/EnvironmentCommands";
+import {PackageManagerTelemetry} from "./language/PackageManagerTelemetry";
 import {WorkspaceFolderManager} from "./vscode-objs/WorkspaceFolderManager";
 import {SyncCommands} from "./sync/SyncCommands";
 import {CodeSynchronizer} from "./sync";
@@ -86,7 +87,7 @@ import {
 } from "./ui/unity-catalog/UnityCatalogTreeDataProvider";
 import {registerDetailPanel} from "./ui/unity-catalog/registerDetailPanel";
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const packageJson = require("../package.json");
 
 const customWhenContext = new CustomWhenContext();
@@ -335,6 +336,24 @@ export async function activate(
         customWhenContext,
         telemetry
     );
+    const packageManagerTelemetry = new PackageManagerTelemetry(
+        telemetry,
+        pythonExtensionWrapper,
+        () => {
+            try {
+                return workspaceFolderManager.activeProjectUri.fsPath;
+            } catch {
+                return undefined;
+            }
+        },
+        () => {
+            if (connectionManager.serverless) {
+                return "serverless";
+            }
+            return connectionManager.cluster ? "cluster" : "none";
+        },
+        () => connectionManager.state === "CONNECTED"
+    );
     context.subscriptions.push(
         bundleFileWatcher,
         bundleValidateModel,
@@ -393,11 +412,15 @@ export async function activate(
         connectionManager
     );
     const workspaceFsFsp = new WorkspaceFsFileSystemProvider(connectionManager);
+    const workspaceFsTreeView = window.createTreeView("workspaceFsView", {
+        treeDataProvider: workspaceFsDataProvider,
+    });
     const workspaceFsCommands = new WorkspaceFsCommands(
         workspaceFolderManager,
         connectionManager,
         workspaceFsDataProvider,
-        workspaceFsFsp
+        workspaceFsFsp,
+        workspaceFsTreeView
     );
 
     context.subscriptions.push(
@@ -409,10 +432,7 @@ export async function activate(
             }
         ),
         workspaceFsFsp,
-        window.registerTreeDataProvider(
-            "workspaceFsView",
-            workspaceFsDataProvider
-        ),
+        workspaceFsTreeView,
         telemetry.registerCommand(
             "databricks.wsfs.refresh",
             workspaceFsCommands.refresh,
@@ -421,6 +441,21 @@ export async function activate(
         telemetry.registerCommand(
             "databricks.wsfs.createFolder",
             workspaceFsCommands.createFolder,
+            workspaceFsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.wsfs.createFolder.toolbar",
+            workspaceFsCommands.createFolderFromToolbar,
+            workspaceFsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.wsfs.createNewFile",
+            workspaceFsCommands.createFile,
+            workspaceFsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.wsfs.createNewFile.toolbar",
+            workspaceFsCommands.createFileFromToolbar,
             workspaceFsCommands
         ),
         telemetry.registerCommand(
@@ -441,6 +476,11 @@ export async function activate(
         telemetry.registerCommand(
             "databricks.wsfs.uploadFile",
             workspaceFsCommands.uploadFile,
+            workspaceFsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.wsfs.uploadFile.toolbar",
+            workspaceFsCommands.uploadFileFromToolbar,
             workspaceFsCommands
         ),
         telemetry.registerCommand(
@@ -598,13 +638,15 @@ export async function activate(
                 connectionManager,
                 pythonExtensionWrapper,
                 environmentDependenciesInstaller,
-                configureAutocomplete
+                configureAutocomplete,
+                packageManagerTelemetry
             )
     );
     const environmentCommands = new EnvironmentCommands(
         featureManager,
         pythonExtensionWrapper,
-        environmentDependenciesInstaller
+        environmentDependenciesInstaller,
+        packageManagerTelemetry
     );
     context.subscriptions.push(
         telemetry.registerCommand(
@@ -982,7 +1024,8 @@ export async function activate(
         featureManager,
         context,
         customWhenContext,
-        telemetry
+        telemetry,
+        packageManagerTelemetry
     );
     const debugFactory = new DatabricksDebugAdapterFactory(
         connectionManager,

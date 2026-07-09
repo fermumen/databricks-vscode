@@ -1,3 +1,46 @@
+# Release: v2.12.2
+
+## packages/databricks-vscode
+
+## (2026-07-08)
+
+-   Bump bcryptjs from 2.4.3 to 3.0.3 (#1960) ([e585b10](https://github.com/databricks/databricks-vscode/commit/e585b10))
+-   Bump markdown-it from 12.3.2 to 14.2.0 (#1951) ([1622807](https://github.com/databricks/databricks-vscode/commit/1622807))
+-   Bump shell-quote from 1.8.1 to 1.8.4 (#1952) ([4467305](https://github.com/databricks/databricks-vscode/commit/4467305))
+-   Upgrade @vscode/extension-telemetry 0.9.9 → 1.5.2 (#1967) ([1fc0f75](https://github.com/databricks/databricks-vscode/commit/1fc0f75))
+
+# Release: v2.12.1
+
+## packages/databricks-vscode
+
+## (2026-07-02)
+
+-   [telemetry] Detect Python package manager(s) at project setup (#1918) ([133c453](https://github.com/databricks/databricks-vscode/commit/133c453)), closes [#1918](https://github.com/databricks/databricks-vscode/issues/1918)
+-   Correctly resolve relative includes in `databricks.yml` from parent folders (#1870) ([06a3abc](https://github.com/databricks/databricks-vscode/commit/06a3abc)), closes [#1870](https://github.com/databricks/databricks-vscode/issues/1870) [#1818](https://github.com/databricks/databricks-vscode/issues/1818) [#1731](https://github.com/databricks/databricks-vscode/issues/1731)
+-   Rename schema name, databricks-asset-bundles.json to declarative-automatation-bundles.json (#1885) ([a91942c](https://github.com/databricks/databricks-vscode/commit/a91942c)), closes [#1885](https://github.com/databricks/databricks-vscode/issues/1885)
+
+# Release: v2.12.0
+
+## packages/databricks-vscode
+
+## (2026-06-24)
+
+-   Add create file support to WSFS explorer (#1922) ([430a4d8](https://github.com/databricks/databricks-vscode/commit/430a4d8)), closes [#1922](https://github.com/databricks/databricks-vscode/issues/1922)
+-   Bound databricks-cli login timeout to fix indefinite WSL hang (#1921) ([a56cb82](https://github.com/databricks/databricks-vscode/commit/a56cb82)), closes [#1921](https://github.com/databricks/databricks-vscode/issues/1921) [#1917](https://github.com/databricks/databricks-vscode/issues/1917)
+-   Fix Databricks Connect run/debug interpreter split-brain (#1912) ([2bebf16](https://github.com/databricks/databricks-vscode/commit/2bebf16)), closes [#1912](https://github.com/databricks/databricks-vscode/issues/1912) [#1905](https://github.com/databricks/databricks-vscode/issues/1905)
+-   Fix Volume "Open in Databricks" routing to volume URL (#1925) ([630e267](https://github.com/databricks/databricks-vscode/commit/630e267)), closes [#1925](https://github.com/databricks/databricks-vscode/issues/1925)
+
+# Release: v2.11.1
+
+## packages/databricks-vscode
+
+## (2026-06-18)
+
+-   fix: use correct target folder for createFolder/uploadFile in Workspace fs (#1913) ([be427e9](https://github.com/databricks/databricks-vscode/commit/be427e9)), closes [#1913](https://github.com/databricks/databricks-vscode/issues/1913)
+-   Drop the “or greater” addition on the line where extension suggests to activate a Python environment ([13452fb](https://github.com/databricks/databricks-vscode/commit/13452fb)), closes [#1915](https://github.com/databricks/databricks-vscode/issues/1915)
+-   Gate WSFS and docs panels on extension activation (#1909) ([308f687](https://github.com/databricks/databricks-vscode/commit/308f687)), closes [#1909](https://github.com/databricks/databricks-vscode/issues/1909)
+-   Pass DATABRICKS_CLI_PATH and resolve the platform-specific CLI binary (#1910) ([6fcb630](https://github.com/databricks/databricks-vscode/commit/6fcb630)), closes [#1910](https://github.com/databricks/databricks-vscode/issues/1910) [#1903](https://github.com/databricks/databricks-vscode/issues/1903)
+
 # Release: v2.11.0
 
 ## packages/databricks-vscode
