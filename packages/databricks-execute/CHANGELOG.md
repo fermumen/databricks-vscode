@@ -1,8 +1,10 @@
-# Release: v2.15.2
+# Release: v2.15.3
 
 ## packages/databricks-execute
 
-## (2026-03-26)
+## (2026-07-30)
 
--   Add repeatable `--widget KEY=VALUE` support for notebook runs.
--   Add a notebook smoke example for widget parameters in `exec-example/`.
+-   Surface Databricks API logs, errors, and traces for failed workflow runs.
+-   Propagate the workspace ID from bundle validation.
+-   Update serverless environment configuration and package dependencies.
+-   Preserve the `databricks-execute` command when publishing with current npm versions.
