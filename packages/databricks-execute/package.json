@@ -15,7 +15,7 @@
         "access": "public"
     },
     "bin": {
-        "databricks-execute": "./dist/cli.js"
+        "databricks-execute": "dist/cli.js"
     },
     "files": [
         "dist",
