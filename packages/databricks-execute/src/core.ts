@@ -2,6 +2,30 @@ import path from "node:path";
 
 export type NotebookType = "IPYNB" | "PY_DBNB" | "OTHER_DBNB";
 
+export function createProgressReporter<T>(
+    report: (value: T) => void,
+    heartbeatMs: number,
+    now: () => number = Date.now
+): (value: T) => void {
+    let hasReported = false;
+    let lastValue: T;
+    let lastReportedAt = 0;
+
+    return (value: T) => {
+        const currentTime = now();
+        if (
+            !hasReported ||
+            value !== lastValue ||
+            currentTime - lastReportedAt >= heartbeatMs
+        ) {
+            hasReported = true;
+            lastValue = value;
+            lastReportedAt = currentTime;
+            report(value);
+        }
+    };
+}
+
 export function coalesce(
     ...values: Array<string | undefined>
 ): string | undefined {

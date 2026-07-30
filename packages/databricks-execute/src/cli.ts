@@ -23,6 +23,7 @@ import {
 import {
     coalesce,
     compileBootstrapCommand,
+    createProgressReporter,
     detectNotebookType,
     extractNotebookTextOutputFromExportedHtml,
     htmlToPlainText,
@@ -36,7 +37,7 @@ import {
 } from "./core";
 
 let activeDatabricksCliProcess: ChildProcess | undefined;
-const WAIT_HEARTBEAT_MS = 30_000;
+const WAIT_HEARTBEAT_MS = 60_000;
 
 type CliOptions = {
     target?: string;
@@ -612,9 +613,13 @@ async function main() {
                 nowPrefix(
                     `Starting cluster ${cluster.name} (${cluster.id})...`
                 );
-                await cluster.start(cts.token, (state) => {
-                    nowPrefix(`Cluster state: ${state}`);
-                });
+                await cluster.start(
+                    cts.token,
+                    createProgressReporter(
+                        (state) => nowPrefix(`Cluster state: ${state}`),
+                        WAIT_HEARTBEAT_MS
+                    )
+                );
             } else {
                 fail(
                     `Cluster is ${cluster.state}. Start it and retry, or pass --start-cluster.`
@@ -697,19 +702,13 @@ async function main() {
             nowPrefix(`Run ID: ${run.details.run_id}`);
         }
 
-        let lastState: string | undefined;
-        let lastStateLogAt = 0;
-        await run.wait((state) => {
-            const now = Date.now();
-            if (
-                state !== lastState ||
-                now - lastStateLogAt >= WAIT_HEARTBEAT_MS
-            ) {
-                lastState = state;
-                lastStateLogAt = now;
-                nowPrefix(`Run state: ${state}`);
-            }
-        }, cts.token);
+        await run.wait(
+            createProgressReporter(
+                (state) => nowPrefix(`Run state: ${state}`),
+                WAIT_HEARTBEAT_MS
+            ),
+            cts.token
+        );
 
         const resultState = run.state?.result_state;
         const stateMessage = run.state?.state_message;
@@ -870,22 +869,13 @@ async function main() {
             persistContextState: shouldKeepExecutionContext,
         });
 
-        let lastCommandStatus: string | undefined;
-        let lastCommandStatusLogAt = 0;
+        const reportCommandStatus = createProgressReporter(
+            (status) => nowPrefix(`Command status: ${status}`),
+            WAIT_HEARTBEAT_MS
+        );
         const response = await executionContext.execute(
             command,
-            (status) => {
-                const currentStatus = status.status ?? "Unknown";
-                const now = Date.now();
-                if (
-                    currentStatus !== lastCommandStatus ||
-                    now - lastCommandStatusLogAt >= WAIT_HEARTBEAT_MS
-                ) {
-                    lastCommandStatus = currentStatus;
-                    lastCommandStatusLogAt = now;
-                    nowPrefix(`Command status: ${currentStatus}`);
-                }
-            },
+            (status) => reportCommandStatus(status.status ?? "Unknown"),
             cts.token,
             new Time(240, TimeUnits.hours)
         );

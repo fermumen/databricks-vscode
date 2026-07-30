@@ -44,7 +44,7 @@ Notes:
 - Script args (`-- arg1 arg2`) and `--env KEY=VALUE` work only for **plain** `.py` files.
 - For REPL-style iteration, run once with `--keep-context` to print an execution context id, then pass `--context-id <id>` on later plain `.py` runs to reuse that interpreter state.
 - Notebook runs don’t accept positional args or `--env`; use repeatable `--widget KEY=VALUE` to populate notebook widget / `base_parameters` values instead.
-- Long-running runs are supported. `databricks-execute` waits for completion and prints heartbeat status logs while waiting.
+- Long-running runs are supported. `databricks-execute` prints state changes immediately and an unchanged-state heartbeat at most once per minute while waiting.
 
 ## Databricks notebook source:
 When creating new files prefer this format.

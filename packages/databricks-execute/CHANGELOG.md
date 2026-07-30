@@ -1,3 +1,11 @@
+# Release: v2.15.4
+
+## packages/databricks-execute
+
+## (2026-07-30)
+
+-   Reduce polling noise by printing state changes immediately and unchanged-state heartbeats once per minute.
+
 # Release: v2.15.3
 
 ## packages/databricks-execute
