@@ -9,7 +9,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 concurrency:
@@ -58,3 +58,34 @@ jobs:
       - name: Publish package
         run: npm publish --access public
         working-directory: packages/databricks-execute
+
+      - name: Tag published version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: databricks-execute-v${{ inputs.version }}
+        run: |
+          if EXISTING_SHA=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG_NAME}" \
+            --jq ".object.sha" 2>/dev/null); then
+            if [[ "$EXISTING_SHA" != "$GITHUB_SHA" ]]; then
+              echo "Tag $TAG_NAME already points to $EXISTING_SHA, not $GITHUB_SHA."
+              exit 1
+            fi
+            echo "Tag $TAG_NAME already points to $GITHUB_SHA."
+            exit 0
+          fi
+
+          for ATTEMPT in 1 2 3; do
+            if gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${TAG_NAME}" \
+              -f sha="$GITHUB_SHA"; then
+              echo "Created tag $TAG_NAME at $GITHUB_SHA."
+              exit 0
+            fi
+            echo "Tag creation attempt $ATTEMPT failed."
+            sleep 2
+          done
+
+          echo "Failed to create tag $TAG_NAME after publishing."
+          exit 1
