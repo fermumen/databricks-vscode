@@ -110,7 +110,7 @@ Notes:
 -   `--keep-context` leaves a newly created Command Execution context alive and prints its id; pass that id back with `--context-id <id>` to reuse interpreter state across plain `.py` runs.
 -   Repeat `--widget KEY=VALUE` to populate notebook widget / `base_parameters` values for notebook runs.
 -   Notebook output is printed by extracting text stdout/stderr (and tracebacks) from the exported run. For rich outputs (tables/plots/HTML), open the run URL in a browser.
--   Long-running executions are supported. The CLI waits for completion and prints periodic heartbeat status lines while the run is active.
+-   Long-running executions are supported. The CLI prints status changes immediately and an unchanged-state heartbeat at most once per minute while waiting.
 -   In plain `.py` mode (Command Execution API), client-side wait timeout is set to 240 hours.
 -   In notebook workflow mode (Jobs API), one-off run timeout is explicitly set to `0` (no timeout).
 

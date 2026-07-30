@@ -4,6 +4,7 @@ import test from "node:test";
 import {
     coalesce,
     compileBootstrapCommand,
+    createProgressReporter,
     detectNotebookType,
     ensureValidEnvVars,
     extractNotebookTextOutputFromExportedHtml,
@@ -16,6 +17,30 @@ import {
     remoteWorkspacePathToLocalPath,
     workspacePrefixedPath,
 } from "./core";
+
+test("createProgressReporter reports changes immediately and unchanged heartbeats", () => {
+    const reports: string[] = [];
+    let currentTime = 1_000;
+    const report = createProgressReporter(
+        (state: string) => reports.push(state),
+        60_000,
+        () => currentTime
+    );
+
+    report("PENDING");
+    currentTime += 10_000;
+    report("PENDING");
+    currentTime += 50_000;
+    report("PENDING");
+    currentTime += 1_000;
+    report("RUNNING");
+    currentTime += 59_999;
+    report("RUNNING");
+    currentTime += 1;
+    report("RUNNING");
+
+    assert.deepEqual(reports, ["PENDING", "PENDING", "RUNNING", "RUNNING"]);
+});
 
 test("coalesce returns first non-empty value", () => {
     assert.equal(coalesce(undefined, "", "a", "b"), "a");
