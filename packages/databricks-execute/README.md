@@ -165,3 +165,13 @@ The CLI runs `databricks auth env --host <host>` to resolve the token at runtime
 4. Databricks CLI auth chain (for token resolution)
 
 Run `databricks-execute --help` for the full set of options.
+
+## Publishing a release
+
+Releases are not triggered by commits or Git tags. To publish a new version:
+
+1. Bump `version` in `packages/databricks-execute/package.json` and merge the change into `main`.
+2. Open the **Publish databricks-execute to npm** workflow in GitHub Actions.
+3. Select **Run workflow** from `main` and enter the exact version from `package.json`.
+
+The GitHub-hosted runner verifies the version, installs dependencies, runs the package tests, builds the package, and publishes it to npm through OIDC trusted publishing. After npm publishing succeeds, the workflow creates a `databricks-execute-v<version>` Git tag pointing to the published `main` commit.
