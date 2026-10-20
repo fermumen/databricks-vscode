@@ -1,3 +1,145 @@
+# Release: v2.21.0
+
+## packages/databricks-vscode
+
+## (2026-10-12)
+
+-   Remove the Terraform deployment engine, as part of the update to Databricks CLI v1.20.0 (#2243) ([b087b77](https://github.com/databricks/databricks-vscode/commit/b087b77)). Bundles now always deploy with the direct engine: setting `bundle.engine: terraform` or `DATABRICKS_BUNDLE_ENGINE=terraform` is an error, and if existing Terraform state can't be migrated, the deploy fails instead of falling back to Terraform. If you still need Terraform, stay on extension v2.20.0. The extension also no longer ships the Terraform binary that security scans flagged (#2166). See the [CLI release notes](https://github.com/databricks/cli/releases/tag/v1.20.0) for details
+-   Verify TLS certificates for SDK calls again by default: an unset `databricks.proxy.strictSSL` now falls back to `http.proxyStrictSSL` (verification was skipped since v2.19.0), and honor `http.systemCertificates` (#2244) ([8654191](https://github.com/databricks/databricks-vscode/commit/8654191))
+-   Sort folders alphabetically in the Workspace File System view (#2233) ([9b26c33](https://github.com/databricks/databricks-vscode/commit/9b26c33)), see #2231
+
+# Release: v2.20.0
+
+## packages/databricks-vscode
+
+## (2026-10-01)
+
+-   Require VS Code 1.104 or later (#2216) ([7186e67](https://github.com/databricks/databricks-vscode/commit/7186e67)) — older VS Code versions stay on v2.19.0
+-   Refresh the Bundle Variables view when an override is saved or reset, instead of relying on the file watcher, which could miss changes on Linux (#2220) ([1fb5024](https://github.com/databricks/databricks-vscode/commit/1fb5024))
+-   Update Databricks CLI to v1.19.0 (#2229) ([575d64f](https://github.com/databricks/databricks-vscode/commit/575d64f)) — bundle deploy now migrates existing Terraform deployment state to the direct engine before deploying, and errors out when a configured `workspace_id` does not match the connected workspace; see the [CLI release notes](https://github.com/databricks/cli/releases/tag/v1.19.0) for details
+
+# Release: v2.19.0
+
+## packages/databricks-vscode
+
+## (2026-09-25)
+
+-   Add a setting to override CLI path (#2205, #2199) ([d5ea7eb](https://github.com/databricks/databricks-vscode/commit/d5ea7eb))
+-   Add HTTP proxy and corporate-CA support for SDK and bundled CLI (#2178) ([dd8a1c8](https://github.com/databricks/databricks-vscode/commit/dd8a1c8))
+-   Update Databricks CLI to v1.18.0 (#2209) ([b90792c](https://github.com/databricks/databricks-vscode/commit/b90792c))
+-   Bound email-redaction regex to avoid ReDoS on larg… (#2202) ([7bbc670](https://github.com/databricks/databricks-vscode/commit/7bbc670))
+
+# Release: v2.18.0
+
+## packages/databricks-vscode
+
+## (2026-09-17)
+
+-   Report the chosen preset in the Python setup success panel (#2192) ([b4cf108](https://github.com/databricks/databricks-vscode/commit/b4cf108))
+-   Update Databricks CLI to v1.17.0 (#2200) ([313a4c1](https://github.com/databricks/databricks-vscode/commit/313a4c1)) - allows SSH sessions to survive transient disconnects; see the [CLI release notes](https://github.com/databricks/cli/releases/tag/v1.17.0) for details
+
+# Release: v2.17.2
+
+## packages/databricks-vscode
+
+## (2026-09-11)
+
+-   Update Databricks CLI to v1.16.1 (#2189) ([abc516c](https://github.com/databricks/databricks-vscode/commit/abc516c)) — fixes an SSH transfer regression affecting transfers larger than 1 MiB; see the [CLI release notes](https://github.com/databricks/cli/releases) for details
+
+# Release: v2.17.0
+
+## packages/databricks-vscode
+
+## (2026-09-10)
+
+-   Add a Python environment setup preset picker to choose a Full, DB Connect, or Python-only environment (#2179) ([f7e0004](https://github.com/databricks/databricks-vscode/commit/f7e0004))
+-   Recover from a dependency constraint conflict during Python setup by offering to retry as a DB Connect environment (#2186) ([06cfbf1](https://github.com/databricks/databricks-vscode/commit/06cfbf1))
+-   Add recovery UX for Python download failures (#2164) ([ea38e82](https://github.com/databricks/databricks-vscode/commit/ea38e82))
+-   Show an actionable error when Python setup hits a merge conflict on a `pyproject.toml` without a `[project]` table (#2180) ([685670e](https://github.com/databricks/databricks-vscode/commit/685670e))
+-   Preserve script stdout when an Upload-and-Run file fails (#2171) ([05ebc1c](https://github.com/databricks/databricks-vscode/commit/05ebc1c))
+-   Update Databricks CLI to v1.16.0 (#2175, #2183) ([51c8bc6](https://github.com/databricks/databricks-vscode/commit/51c8bc6)) — see the [CLI release notes](https://github.com/databricks/cli/releases) for changes
+
+# Release: v2.16.0
+
+## packages/databricks-vscode
+
+## (2026-09-03)
+
+-   Add a manual mode to opt out of automated Python environment (uv) setup (#2158) ([9ab3cab](https://github.com/databricks/databricks-vscode/commit/9ab3cab))
+-   Offer a one-click "Install uv" action when uv is missing (#2162) ([9f6f125](https://github.com/databricks/databricks-vscode/commit/9f6f125))
+-   Prompt re-login on setup-local session expiry instead of a hard error (#2163) ([3ebc920](https://github.com/databricks/databricks-vscode/commit/3ebc920))
+-   Normalize notebook cell source before wrapping jobs, fixing "Run as Databricks Job" when a cell's source is a JSON string (#2143) ([3b8a4dd](https://github.com/databricks/databricks-vscode/commit/3b8a4dd)) — reported in [#2142](https://github.com/databricks/databricks-vscode/issues/2142)
+-   Update Databricks CLI to v1.14.1 (#2160) ([e3ddf06](https://github.com/databricks/databricks-vscode/commit/e3ddf06)) — see the [CLI release notes](https://github.com/databricks/cli/releases) for changes
+
+# Release: v2.15.0
+
+## packages/databricks-vscode
+
+## (2026-08-26)
+
+-   AI tools installation now flags agents that can't be installed, in the picker and the Agents tree (#2150) ([c04fb15](https://github.com/databricks/databricks-vscode/commit/c04fb15))
+-   Warn when a bundle uses the deprecated Terraform engine (#2152) ([5e558df](https://github.com/databricks/databricks-vscode/commit/5e558df))
+-   Update Databricks CLI to v1.14.0 (#2154) ([9a24562](https://github.com/databricks/databricks-vscode/commit/9a24562))
+
+# Release: v2.14.1
+
+## packages/databricks-vscode
+
+## (2026-08-21)
+
+-   Narrate live progress during Python environment setup (#2139) ([f606d0a](https://github.com/databricks/databricks-vscode/commit/f606d0a))
+-   Pre-check the host CLI before starting the SSH tunnel (#2127) ([5af58f2](https://github.com/databricks/databricks-vscode/commit/5af58f2))
+-   Show an info toast on a successful Python environment setup that had warnings (#2138) ([2acdc44](https://github.com/databricks/databricks-vscode/commit/2acdc44))
+-   Avoid duplicate profile section creation in `.databrickscfg` during OAuth setup (#2133) ([6e1c472](https://github.com/databricks/databricks-vscode/commit/6e1c472))
+
+# Release: v2.14.0
+
+## packages/databricks-vscode
+
+## (2026-08-20)
+
+-   Introduce frictionless Python environment setup that makes local Python setup for Databricks development just work. Because the extension already knows the compute you are targeting — a cluster's DBR version or a serverless environment version — it uses that single input to automatically build a local `.venv` whose Python version and package set exactly match the runtime, eliminating the classic "works locally, breaks on Databricks" mismatch. This release delivers the fully automated uv path: one click in VS Code (or the `databricks environments setup-local` CLI command) resolves the target, fetches runtime-pinned dependency artifacts, installs the correct Python, and provisions a matched environment with `databricks-connect` ready to go (#2124) ([315f77d](https://github.com/databricks/databricks-vscode/commit/315f77d))
+-   Add explicit per-row Copy actions to the configuration view (#2115) ([fe1e4aa](https://github.com/databricks/databricks-vscode/commit/fe1e4aa))
+-   Update Databricks CLI to v1.13.0 (#2136, #2109) ([43af52d](https://github.com/databricks/databricks-vscode/commit/43af52d)) — see the [CLI release notes](https://github.com/databricks/cli/releases) for changes
+
+# Release: v2.13.1
+
+## packages/databricks-vscode
+
+## (2026-08-12)
+
+-   Build terminal commands for the shell that runs them, fixing "Create a new Databricks project" and other terminal actions on Windows with cmd.exe (#2092) ([ebcf7c9](https://github.com/databricks/databricks-vscode/commit/ebcf7c9)) — reported in [#1822](https://github.com/databricks/databricks-vscode/issues/1822)
+-   Fix "Show Bundle Logs", "Show Logs" and "Show Error Logs" doing nothing on hosts that scope the log channel id, such as Cursor (#2093) ([a1c7e84](https://github.com/databricks/databricks-vscode/commit/a1c7e84))
+
+# Release: v2.13.0
+
+## packages/databricks-vscode
+
+## (2026-08-06)
+
+-   Add AI tools support (#2025) ([845c435](https://github.com/databricks/databricks-vscode/commit/845c435))
+-   Enable Unity Catalog (and Docs) in Databricks Remote SSH mode (#2016) ([b5e1754](https://github.com/databricks/databricks-vscode/commit/b5e1754))
+-   Enable starting SSH tunnels (#1989) ([2c7c896](https://github.com/databricks/databricks-vscode/commit/2c7c896))
+-   Update Databricks CLI to v1.11.0 (#2085) ([cdd5b8c](https://github.com/databricks/databricks-vscode/commit/cdd5b8c)) — see the [CLI release notes](https://github.com/databricks/cli/releases) for changes since v1.9.0
+
+# Release: v2.12.4
+
+## packages/databricks-vscode
+
+## (2026-07-30)
+
+-   Fix job run status not updating when the CLI returns a modern job-run URL (#2018) ([d8f06d7](https://github.com/databricks/databricks-vscode/commit/d8f06d7))
+-   Update Databricks CLI to v1.9.0 (#2035) ([9e6dc8d](https://github.com/databricks/databricks-vscode/commit/9e6dc8d)) — see the [CLI release notes](https://github.com/databricks/cli/releases) for changes since v1.7.0
+
+# Release: v2.12.3
+
+## packages/databricks-vscode
+
+## (2026-07-14)
+
+-   Always pass `--host` on databricks-cli login so custom workspace hosts are not redirected to the public login page (#2009) ([d2f0518](https://github.com/databricks/databricks-vscode/commit/d2f0518)) — fixes the OAuth sign-in regression reported in [#2011](https://github.com/databricks/databricks-vscode/issues/2011)
+-   Update Databricks CLI to v1.7.0 (#1999) ([f2e56f2](https://github.com/databricks/databricks-vscode/commit/f2e56f2)) — see the [CLI release notes](https://github.com/databricks/cli/releases) for changes since v1.2.0; notably the direct deployment engine is now GA and the default for new deployments
+
 # Release: v2.12.2
 
 ## packages/databricks-vscode

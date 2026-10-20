@@ -1,5 +1,35 @@
-import {ConfigurationTarget, workspace} from "vscode";
+import {ConfigurationTarget, Disposable, workspace} from "vscode";
 import {Time, TimeUnits} from "@databricks/sdk-experimental";
+
+/**
+ * How the extension provisions the local Python environment. `auto` runs the
+ * uv-native setup (`databricks environments setup-local`) for suitable projects;
+ * `manual` disables it so an existing interpreter/environment is used as-is.
+ */
+export type PythonEnvironmentSetupMode = "auto" | "manual";
+
+/**
+ * The explicitly set boolean in an `inspect` result, workspace before global, or
+ * `undefined` when none is set. Ignores the declared default (so an override
+ * setting can fall back to its built-in `http.*` counterpart) and any
+ * non-boolean value such as a `null` written to settings.json.
+ */
+export function explicitBoolean(
+    setting: {workspaceValue?: unknown; globalValue?: unknown} | undefined
+): boolean | undefined {
+    for (const value of [setting?.workspaceValue, setting?.globalValue]) {
+        if (typeof value === "boolean") {
+            return value;
+        }
+    }
+    return undefined;
+}
+
+function explicitDatabricksBoolean(key: string): boolean | undefined {
+    return explicitBoolean(
+        workspace.getConfiguration("databricks").inspect<boolean>(key)
+    );
+}
 
 export const workspaceConfigs = {
     get maxFieldLength() {
@@ -45,10 +75,34 @@ export const workspaceConfigs = {
         return config || process.env.DATABRICKS_CONFIG_FILE || undefined;
     },
 
+    get databricksCliPath() {
+        return workspace
+            .getConfiguration("databricks")
+            .get<string>("overrideDatabricksCLIPath");
+    },
+
     get experimetalFeatureOverides() {
         return workspace
             .getConfiguration("databricks")
             .get<Array<string>>("experiments.optInto", []);
+    },
+
+    // An Event for changes to `experiments.optInto`. The caller owns the
+    // returned Disposable.
+    onDidChangeExperimentsOptInto(
+        listener: () => void,
+        thisArgs?: unknown,
+        disposables?: Disposable[]
+    ): Disposable {
+        return workspace.onDidChangeConfiguration(
+            (e) => {
+                if (e.affectsConfiguration("databricks.experiments.optInto")) {
+                    listener.call(thisArgs);
+                }
+            },
+            undefined,
+            disposables
+        );
     },
 
     /**
@@ -131,6 +185,41 @@ export const workspaceConfigs = {
         );
     },
 
+    // Any value other than "manual" (unset, "auto", or an unexpected string)
+    // resolves to "auto" so the default and malformed configs both keep the
+    // automated setup — the historical behavior.
+    get pythonEnvironmentSetup(): PythonEnvironmentSetupMode {
+        return workspace
+            .getConfiguration("databricks")
+            .get<string>("python.environmentSetup") === "manual"
+            ? "manual"
+            : "auto";
+    },
+
+    // Notify on changes to `python.environmentSetup`. Kept in the adapter so
+    // both reading the setting and observing its changes stay behind the
+    // vscode-objs seam, instead of feature/UI code reaching into `workspace`.
+    // The caller owns the returned Disposable.
+    onDidChangePythonEnvironmentSetup(listener: () => void): Disposable {
+        return workspace.onDidChangeConfiguration((e) => {
+            if (e.affectsConfiguration("databricks.python.environmentSetup")) {
+                listener();
+            }
+        });
+    },
+
+    // Write `python.environmentSetup` — the one-click "Use manual setup" escape
+    // hatch on a failed setup writes "manual" here. Returns the update Thenable
+    // so the caller can await/handle it.
+    setPythonEnvironmentSetup(
+        mode: PythonEnvironmentSetupMode,
+        target: ConfigurationTarget
+    ): Thenable<void> {
+        return workspace
+            .getConfiguration("databricks")
+            .update("python.environmentSetup", mode, target);
+    },
+
     get bundleRemoteStateRefreshInterval(): number {
         const config =
             workspace
@@ -138,6 +227,60 @@ export const workspaceConfigs = {
                 .get<number>("bundle.remoteStateRefreshInterval") ?? 5;
 
         return new Time(config, TimeUnits.minutes).toMillSeconds().value;
+    },
+
+    /**
+     * Whether TLS certificates must be verified for the extension's SDK HTTP
+     * calls. `databricks.proxy.strictSSL`, when explicitly set, overrides the
+     * built-in `http.proxyStrictSSL`; both default to `true`.
+     */
+    get proxyStrictSSL(): boolean {
+        const override = explicitDatabricksBoolean("proxy.strictSSL");
+        if (override !== undefined) {
+            return override;
+        }
+        return (
+            workspace.getConfiguration("http").get<boolean>("proxyStrictSSL") ??
+            true
+        );
+    },
+
+    /** The `http.proxy` VS Code setting, mirrored for the SDK proxy resolver. */
+    get httpProxy(): string | undefined {
+        return (
+            workspace.getConfiguration("http").get<string>("proxy") || undefined
+        );
+    },
+
+    /** The `http.noProxy` VS Code setting, mirrored for the SDK proxy resolver. */
+    get httpNoProxy(): string[] {
+        return workspace.getConfiguration("http").get<string[]>("noProxy", []);
+    },
+
+    /**
+     * Absolute path to a PEM bundle of additional CA certificates to trust for
+     * the extension's SDK calls, merged with Node's built-in roots and (unless
+     * `http.systemCertificates` is off) the OS trust store. An escape hatch for
+     * corporate CAs that can't be read from the system store.
+     */
+    get proxyCaCert(): string | undefined {
+        return (
+            workspace
+                .getConfiguration("databricks")
+                .get<string>("proxy.caCert") || undefined
+        );
+    },
+
+    /**
+     * The `http.systemCertificates` VS Code setting, mirrored for the SDK CA
+     * bundle: when off, the extension doesn't merge the OS certificate store.
+     */
+    get httpSystemCertificates(): boolean {
+        return (
+            workspace
+                .getConfiguration("http")
+                .get<boolean>("systemCertificates") ?? true
+        );
     },
 };
 

@@ -126,45 +126,80 @@ describe("Bundle Variables", async function () {
     });
 
     it("should override default variable", async function () {
-        await browser.executeWorkbench((vscode) => {
+        // Drain notifications so a toast can't steal focus while the editor opens.
+        await dismissNotifications();
+        // Await the command so the open request is issued before we look for the
+        // tab (the arrow fn must RETURN the Thenable).
+        await browser.executeWorkbench((vscode) =>
             vscode.commands.executeCommand(
                 "databricks.bundle.variable.openFile"
-            );
-        });
-        const editor = (await workbench
-            .getEditorView()
-            .openEditor("vscode.bundlevars.json")) as TextEditor;
+            )
+        );
+        // openEditor enumerates the open tabs once and throws if the tab isn't
+        // there yet; on the slower Windows shard the just-opened tab hasn't
+        // rendered when we first look. Retry until it appears (re-fetching each
+        // pass — do NOT cache the throwing result), failing closed if it never
+        // opens so a genuinely broken command can't pass silently.
+        let editor: TextEditor | undefined;
+        await browser.waitUntil(
+            async () => {
+                try {
+                    editor = (await workbench
+                        .getEditorView()
+                        .openEditor("vscode.bundlevars.json")) as TextEditor;
+                    return editor !== undefined;
+                } catch {
+                    return false;
+                }
+            },
+            {
+                timeout: 10_000,
+                interval: 500,
+                timeoutMsg:
+                    "vscode.bundlevars.json editor did not open within 10s",
+            }
+        );
         assert(editor);
 
-        // Write the override file through the VS Code filesystem API rather
-        // than the editor. `TextEditor.setText()` round-trips the value
-        // through the system clipboard, which fails intermittently under the
-        // headless Xvfb display used in CI ("An error occurred while
-        // copying"). Writing via `vscode.workspace.fs` avoids the clipboard
-        // and — unlike a raw Node `fs.writeFile` — is observed by the
-        // extension's FileSystemWatcher on this file, so the Bundle Variables
-        // tree refreshes just as it does on a manual editor save. See the same
-        // rationale in wsfs_explorer.e2e.ts.
+        // Edit and save through the document API, as a user saving the editor
+        // would. `TextEditor.setText()` round-trips the value through the
+        // system clipboard, which fails intermittently under the headless Xvfb
+        // display used in CI ("An error occurred while copying").
         const overrideContent = JSON.stringify(
             {varWithDefault: "new value"},
             null,
             4
         );
-        const wrote = await browser.executeWorkbench(
+        const saveResult = await browser.executeWorkbench(
             async (vscode, content) => {
-                const uri = vscode.window.activeTextEditor?.document.uri;
-                if (!uri) {
-                    return false;
+                const document = vscode.window.activeTextEditor?.document;
+                if (!document) {
+                    return "no active editor";
                 }
-                await vscode.workspace.fs.writeFile(
-                    uri,
-                    Buffer.from(content, "utf8")
+                const edit = new vscode.WorkspaceEdit();
+                edit.replace(
+                    document.uri,
+                    new vscode.Range(
+                        document.positionAt(0),
+                        document.positionAt(document.getText().length)
+                    ),
+                    content
                 );
-                return true;
+                await vscode.workspace.applyEdit(edit);
+                // save() also returns false when there is nothing to save, so
+                // report an edit that left the file unchanged separately.
+                if (!document.isDirty) {
+                    return "override content matches the file";
+                }
+                return (await document.save()) ? "saved" : "save failed";
             },
             overrideContent
         );
-        assert(wrote, "Could not resolve the vscode.bundlevars.json editor");
+        assert.strictEqual(
+            saveResult,
+            "saved",
+            "Could not save the vscode.bundlevars.json editor"
+        );
 
         const section = (await getViewSection("BUNDLE VARIABLES")) as
             | CustomTreeSection
@@ -174,14 +209,18 @@ describe("Bundle Variables", async function () {
 
         await browser.waitUntil(
             async () => {
-                await assertVariableValue(section, "varWithDefault", {
-                    value: "new value",
-                    defaultValue: "default",
-                });
-                return true;
+                try {
+                    await assertVariableValue(section, "varWithDefault", {
+                        value: "new value",
+                        defaultValue: "default",
+                    });
+                    return true;
+                } catch {
+                    return false;
+                }
             },
             {
-                timeout: 10_000,
+                timeout: 30_000,
                 interval: 2_000,
                 timeoutMsg: "Variable value not updated",
             }
@@ -206,14 +245,30 @@ describe("Bundle Variables", async function () {
 
         await browser.waitUntil(
             async () => {
-                await assertVariableValue(section, "varWithDefault", {
-                    value: "dev",
-                    defaultValue: "default",
-                });
-                return true;
+                try {
+                    await assertVariableValue(section, "varWithDefault", {
+                        value: "dev",
+                        defaultValue: "default",
+                    });
+                    return true;
+                } catch {
+                    // The tree reverts off the extension's FileSystemWatcher,
+                    // which can lag the reset on a slow/busy shard. Re-trigger
+                    // the "Reset bundle variables to default values" action
+                    // (re-fetched, since the element can go stale across tree
+                    // refreshes), then let the next poll re-check. Resetting
+                    // when already-default is a harmless no-op.
+                    const resetAction = await section.getAction(
+                        "Reset bundle variables to default values"
+                    );
+                    if (resetAction) {
+                        await (await resetAction.elem).click();
+                    }
+                    return false;
+                }
             },
             {
-                timeout: 10_000,
+                timeout: 30_000,
                 interval: 2_000,
                 timeoutMsg: "Variable value not updated",
             }

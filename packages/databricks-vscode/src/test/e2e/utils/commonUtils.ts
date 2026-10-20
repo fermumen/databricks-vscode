@@ -1,4 +1,5 @@
 import assert from "node:assert";
+import path from "node:path";
 import {randomUUID} from "crypto";
 import {
     CustomTreeSection,
@@ -6,12 +7,14 @@ import {
     ViewControl,
     ViewSection,
     InputBox,
+    TreeItem,
 } from "wdio-vscode-service";
 
 // eslint-disable-next-line @typescript-eslint/naming-convention
 const ViewSectionTypes = [
     "CLUSTERS",
     "CONFIGURATION",
+    "SSH TUNNEL",
     "WORKSPACE FILE SYSTEM",
     "BUNDLE RESOURCE EXPLORER",
     "BUNDLE VARIABLES",
@@ -44,8 +47,8 @@ export async function findViewSection(name: ViewSectionType) {
         (await (await control?.openView())?.getContent()?.getSections()) ?? [];
     for (const v of views) {
         let title = await v.getTitle();
-        if (title === null) {
-            // VSCode 1.120+ no longer sets the 'title' HTML attribute on .title elements;
+        if (!title) {
+            // Newer VS Code versions leave the title attribute missing or empty;
             // fall back to reading the element's text content.
             title = await (v as any).title$.getText();
         }
@@ -84,6 +87,51 @@ export async function getViewSection(
     return section;
 }
 
+/** The CONFIGURATION section's "Local Folder" item, if it points at `folder`. */
+export async function getLocalFolderTreeItem(folder: string) {
+    const section = (await getViewSection(
+        "CONFIGURATION"
+    )) as CustomTreeSection;
+    assert(section, "CONFIGURATION section doesn't exist");
+    const items = await section.getVisibleItems();
+    for (const item of items) {
+        const label = await item.getLabel();
+        if (label.toLowerCase().includes("local folder")) {
+            const desc = await item.getDescription();
+            const descPath = path.normalize(desc!);
+            console.log("Local Folder description:", descPath);
+            if (descPath.includes(folder)) {
+                return item;
+            }
+        }
+    }
+    return undefined;
+}
+
+/**
+ * Finds an inline action button on a hovered tree item by label.
+ * wdio-vscode-service's `getActionButton` reads labels from a `title` attribute
+ * that VS Code no longer sets (from 1.104); the button's aria-label still has it.
+ * The item must already be hovered (call item.elem.moveTo() before this).
+ */
+export async function getActionButton(
+    item: TreeItem,
+    label: string
+): Promise<WebdriverIO.Element | undefined> {
+    // Search anywhere inside the item element; don't require .actions-container
+    // parent or role="button" — both can be absent in newer VS Code versions.
+    const buttons = await item.elem.$$("a.action-label");
+    for (const btn of buttons) {
+        const ariaLabel = await btn.getAttribute("aria-label");
+        const title = await btn.getAttribute("title");
+        const btnLabel = ariaLabel || title;
+        if (btnLabel && btnLabel.includes(label)) {
+            return btn;
+        }
+    }
+    return undefined;
+}
+
 export async function getTreeViewItems(name: ViewSectionType, section: string) {
     const viewSection = (await getViewSection(name)) as
         | CustomTreeSection
@@ -110,15 +158,74 @@ export async function waitForTreeItems(
     }
 }
 
-export async function dismissNotifications() {
+/**
+ * Drains all VS Code notifications and closes the "What's New" CHANGELOG
+ * preview tab if the extension opened one on activation.
+ *
+ * A single dismissal pass is not sufficient in CI: notifications arrive
+ * asynchronously during extension activation, and on the Windows shard we
+ * observed late-arriving toasts intercepting clicks (e.g. quick-input widget
+ * not displayed, .monaco-select-box not clickable because the notification
+ * list covers it). We poll and dismiss until the notification list stays
+ * empty across two consecutive checks, or the overall timeout expires.
+ *
+ * We also close the CHANGELOG preview: `showWhatsNewPopup` in the extension
+ * fires `markdown.showPreview` on every activation with a fresh globalState
+ * (i.e. every CI run) and races test setup. On Windows it sometimes wins the
+ * race and steals the active-editor slot ("No editor with title
+ * 'vscode.bundlevars.json' found, available editor were: Preview CHANGELOG.md").
+ */
+export async function dismissNotifications({
+    timeoutMs = 8000,
+    quietMs = 500,
+}: {timeoutMs?: number; quietMs?: number} = {}) {
     const workbench = await browser.getWorkbench();
-    await sleep(1000);
-    const notifs = await workbench.getNotifications();
-    try {
-        for (const n of notifs) {
-            await n.dismiss();
+    const deadline = Date.now() + timeoutMs;
+    let consecutiveEmpty = 0;
+    while (Date.now() < deadline) {
+        let notifs;
+        try {
+            notifs = await workbench.getNotifications();
+        } catch {
+            notifs = [];
         }
-    } catch {}
+        if (notifs.length === 0) {
+            consecutiveEmpty += 1;
+            if (consecutiveEmpty >= 2) {
+                break;
+            }
+            await sleep(quietMs);
+            continue;
+        }
+        consecutiveEmpty = 0;
+        for (const n of notifs) {
+            try {
+                await n.dismiss();
+            } catch {
+                // Notification vanished between listing and dismiss — ignore.
+            }
+        }
+        await sleep(quietMs);
+    }
+
+    // Close the "What's New" CHANGELOG preview tab if the extension opened it.
+    try {
+        const editorView = workbench.getEditorView();
+        const tabs = await editorView.getOpenTabs();
+        for (const tab of tabs) {
+            const title = (await tab.getTitle()) ?? "";
+            if (/CHANGELOG\.md/i.test(title)) {
+                try {
+                    await editorView.closeEditor(title);
+                } catch {
+                    // Best-effort: a later test that opens its own editor will
+                    // still succeed because it targets a specific title.
+                }
+            }
+        }
+    } catch {
+        // Ignore: workbench editor view might not be ready yet.
+    }
 }
 
 export async function waitForSyncComplete() {
@@ -210,14 +317,52 @@ export async function waitForLogin(profileName: string) {
     );
 }
 
+/**
+ * Wait until the CONFIGURATION section shows `expected` as a top-level row and not
+ * `forbidden`. Labels match exactly (substrings overlap, e.g. "Set up Python
+ * environment" contains "Python environment"). A `forbidden` hit keeps polling, so
+ * transient startup renders self-heal — only a persistent wrong surface times out.
+ */
+export async function waitForConfigSurface(
+    expected: string,
+    forbidden: string,
+    timeoutMs = 60_000
+) {
+    await browser.waitUntil(
+        async () => {
+            const section = (await getViewSection("CONFIGURATION")) as
+                | CustomTreeSection
+                | undefined;
+            if (!section) {
+                return false;
+            }
+            let sawExpected = false;
+            for (const item of await section.getVisibleItems()) {
+                const label = await item.getLabel();
+                if (label === forbidden) {
+                    return false;
+                }
+                if (label === expected) {
+                    sawExpected = true;
+                }
+            }
+            return sawExpected;
+        },
+        {
+            timeout: timeoutMs,
+            interval: 1000,
+            timeoutMsg: `CONFIGURATION never showed "${expected}" without "${forbidden}"`,
+        }
+    );
+}
+
 export function getStaticResourceName(name: string) {
     return `vscode_integration_test_${name}`;
 }
 
 export function getUniqueResourceName(name?: string) {
-    const uniqueName = name
-        ? `${randomUUID().slice(0, 8)}_${name}`
-        : randomUUID().slice(0, 8);
+    const uniquePart = `${Date.now()}_${randomUUID().slice(0, 8)}`;
+    const uniqueName = name ? `${uniquePart}_${name}` : uniquePart;
     return getStaticResourceName(uniqueName);
 }
 
@@ -236,8 +381,12 @@ export async function waitForWorkflowWebview(
             }
         },
         {
-            timeout: 5_000,
-            interval: 1_000,
+            // The workflow run must be submitted and the "Databricks Job Run"
+            // webview panel materialized before this resolves; on the Windows
+            // shard 5s is not enough and the panel intermittently misses the
+            // window ("Webview did not open"). 60s covers observed open times.
+            timeout: 60_000,
+            interval: 2_000,
             timeoutMsg: "Webview did not open",
         }
     );
@@ -330,7 +479,11 @@ export async function executeCommandWhenAvailable(command: string) {
     });
 }
 
-export async function waitForNotification(message: string, action?: string) {
+export async function waitForNotification(
+    message: string,
+    action?: string,
+    timeoutMs = 60_000
+) {
     await browser.waitUntil(
         async () => {
             const workbench = await browser.getWorkbench();
@@ -349,7 +502,7 @@ export async function waitForNotification(message: string, action?: string) {
             return false;
         },
         {
-            timeout: 60_000,
+            timeout: timeoutMs,
             interval: 2000,
             timeoutMsg: `Notification with message "${message}" not found`,
         }

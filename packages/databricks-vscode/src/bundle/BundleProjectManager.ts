@@ -19,7 +19,8 @@ import {onError} from "../utils/onErrorDecorator";
 import {BundleInitWizard} from "./BundleInitWizard";
 import {EventReporter, Events, Telemetry} from "../telemetry";
 import {WorkspaceFolderManager} from "../vscode-objs/WorkspaceFolderManager";
-import {promptToSelectActiveProjectFolder} from "./activeBundleUtils";
+import {AiToolsManager} from "../aitools/AiToolsManager";
+import {selectActiveProjectFolder} from "./activeBundleUtils";
 
 export class BundleProjectManager {
     private logger = logging.NamedLogger.getOrCreate(Loggers.Extension);
@@ -50,7 +51,8 @@ export class BundleProjectManager {
         private configModel: ConfigModel,
         private bundleFileSet: BundleFileSet,
         private workspaceFolderManager: WorkspaceFolderManager,
-        private telemetry: Telemetry
+        private telemetry: Telemetry,
+        private aiToolsManager?: AiToolsManager
     ) {
         this.disposables.push(
             this.workspaceFolderManager.onDidChangeActiveProjectFolder(
@@ -164,15 +166,11 @@ export class BundleProjectManager {
     }
 
     public async selectActiveProjectFolder() {
-        return window.withProgress(
-            {location: {viewId: "configurationView"}},
+        return selectActiveProjectFolder(
+            this.workspaceFolderManager,
             async () => {
                 await this.detectSubProjects();
-                return promptToSelectActiveProjectFolder(
-                    this.subProjects ?? [],
-                    undefined,
-                    this.workspaceFolderManager
-                );
+                return this.subProjects ?? [];
             }
         );
     }
@@ -332,7 +330,11 @@ export class BundleProjectManager {
 
     @onError({popup: {prefix: "Failed to initialize new Databricks project"}})
     public async initNewProject() {
-        const bundleInitWizard = new BundleInitWizard(this.cli, this.telemetry);
+        const bundleInitWizard = new BundleInitWizard(
+            this.cli,
+            this.telemetry,
+            this.aiToolsManager
+        );
         const authProvider =
             this.connectionManager.databricksWorkspace?.authProvider;
         const parentFolder = await bundleInitWizard.initNewProject(

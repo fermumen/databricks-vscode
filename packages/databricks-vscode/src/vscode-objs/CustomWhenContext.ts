@@ -1,5 +1,6 @@
 import {commands} from "vscode";
 import {workspaceConfigs} from "./WorkspaceConfigs";
+import type {ConnectionState} from "../configuration/models/WorkspaceConnectionModel";
 
 // eslint-disable-next-line @typescript-eslint/naming-convention
 export class CustomWhenContext {
@@ -85,6 +86,30 @@ export class CustomWhenContext {
         );
     }
 
+    setLanguageModelChatEnabled(enabled: boolean) {
+        commands.executeCommand(
+            "setContext",
+            "databricks.feature.chat.unityGateway",
+            enabled
+        );
+    }
+
+    setUnityGatewayHasSavedProfile(value: boolean) {
+        commands.executeCommand(
+            "setContext",
+            "databricks.context.unityGateway.hasSavedProfile",
+            value
+        );
+    }
+
+    setUnityGatewayState(value: ConnectionState) {
+        commands.executeCommand(
+            "setContext",
+            "databricks.context.unityGateway.state",
+            value
+        );
+    }
+
     setIsActiveFileInActiveWorkspace(value: boolean) {
         commands.executeCommand(
             "setContext",
@@ -113,6 +138,22 @@ export class CustomWhenContext {
         commands.executeCommand(
             "setContext",
             "databricks.context.remoteMode",
+            value
+        );
+    }
+
+    setAiToolsInstalled(value: boolean) {
+        commands.executeCommand(
+            "setContext",
+            "databricks.context.aitools.installed",
+            value
+        );
+    }
+
+    setAiToolsShowCursorPlugin(value: boolean) {
+        commands.executeCommand(
+            "setContext",
+            "databricks.context.aitools.showCursorPlugin",
             value
         );
     }

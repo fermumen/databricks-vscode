@@ -4,16 +4,25 @@ import {
     env,
     ExtensionContext,
     extensions,
+    OutputChannel,
     window,
     workspace,
 } from "vscode";
+import {readFile} from "fs/promises";
 import {CliWrapper} from "./cli/CliWrapper";
 import {ConnectionCommands} from "./configuration/ConnectionCommands";
 import {ConnectionManager} from "./configuration/ConnectionManager";
 import {ClusterListDataProvider} from "./cluster/ClusterListDataProvider";
 import {ClusterModel} from "./cluster/ClusterModel";
 import {ClusterCommands} from "./cluster/ClusterCommands";
+import {Cluster} from "./sdk-extensions/Cluster";
 import {ConfigurationDataProvider} from "./ui/configuration-view/ConfigurationDataProvider";
+import {RemoteConfigurationDataProvider} from "./ui/configuration-view/RemoteConfigurationDataProvider";
+import {composePythonSetupEntry} from "./ui/configuration-view/pythonSetupEntry";
+import {routeEnvironmentSetup} from "./language/pythonSetupRouting";
+import {COPY_COMMAND_IDS} from "./ui/configuration-view/copyActions";
+import {AiToolsManager} from "./aitools/AiToolsManager";
+import {AiToolsCommands} from "./aitools/AiToolsCommands";
 import {RunCommands} from "./run/RunCommands";
 import {DatabricksDebugAdapterFactory} from "./run/DatabricksDebugAdapter";
 import {DatabricksWorkflowDebugAdapterFactory} from "./run/DatabricksWorkflowDebugAdapter";
@@ -25,8 +34,9 @@ import {logging} from "@databricks/sdk-experimental";
 import {workspaceConfigs} from "./vscode-objs/WorkspaceConfigs";
 import {
     FileUtils,
+    HostUtils,
     PackageJsonUtils,
-    TerraformUtils,
+    ProxyAgent,
     UrlUtils,
     UtilsCommands,
 } from "./utils";
@@ -39,16 +49,46 @@ import {
 import {CustomWhenContext} from "./vscode-objs/CustomWhenContext";
 import {StateStorage} from "./vscode-objs/StateStorage";
 import path from "node:path";
+import {existsSync} from "node:fs";
 import {FeatureId, FeatureManager} from "./feature-manager/FeatureManager";
+import {isLanguageModelChatEnabled} from "./lm-chat/languageModelChatExperiment";
+import {UnityGatewayConnectionManager} from "./lm-chat/UnityGatewayConnectionManager";
+import {UnityGatewayCommands} from "./lm-chat/UnityGatewayCommands";
+import {registerUnityGatewayChatProvider} from "./lm-chat/UnityGatewayChatProvider";
+import {PythonSetupManagerDetector} from "./python-setup/utils/PythonSetupManagerDetector";
+import {PythonSetupCliClient} from "./python-setup/gateways/PythonSetupCliClient";
+import {PythonSetupEnvironmentSetup} from "./python-setup/controllers/PythonSetupEnvironmentSetup";
+import {
+    makePythonSetupDeps,
+    resolveComputeFrom,
+} from "./python-setup/controllers/pythonSetupDeps";
+import {PythonSetupDriftManager} from "./python-setup/controllers/PythonSetupDriftManager";
+import {PythonSetupAdoptionManager} from "./python-setup/controllers/PythonSetupAdoptionManager";
+import {SetupCompute} from "./python-setup/controllers/PythonSetupEnvironmentSetup";
+import {venvInterpreterPath} from "./python-setup/utils/venvInterpreterPath";
+import {optOutOfAutomatedPythonSetup} from "./python-setup/utils/manualSetupOptOut";
+import {
+    INSTALL_UV_COMMAND_ID,
+    USE_MANUAL_SETUP_COMMAND_ID,
+} from "./python-setup/utils/errorMessages";
+import {
+    runUvInstall,
+    UV_INSTALL_CONFIRM_ACTION,
+    UV_INSTALL_CONFIRM_MESSAGE,
+} from "./python-setup/utils/uvInstall";
+import {makeServerlessVersionPrompt} from "./python-setup/utils/serverlessVersionResolver";
+import {collectPackageManagerSignals} from "./language/packageManagerSignals";
 import {EnvironmentDependenciesVerifier} from "./language/EnvironmentDependenciesVerifier";
 import {MsPythonExtensionWrapper} from "./language/MsPythonExtensionWrapper";
 import {DatabricksEnvFileManager} from "./file-managers/DatabricksEnvFileManager";
 import {getContextMetadata, Telemetry, toUserMetadata} from "./telemetry";
 import "./telemetry/commandExtensions";
-import {Events, Metadata} from "./telemetry/constants";
+import "./telemetry/pythonSetupExtensions";
+import {Events, Metadata, PythonSetupOptOutSource} from "./telemetry/constants";
 import {EnvironmentDependenciesInstaller} from "./language/EnvironmentDependenciesInstaller";
 import {setDbnbCellLimits} from "./language/notebooks/DatabricksNbCellLimits";
 import {DbConnectStatusBarButton} from "./language/DbConnectStatusBarButton";
+import {SshCommands} from "./ssh/SshCommands";
 import {NotebookInitScriptManager} from "./language/notebooks/NotebookInitScriptManager";
 import {showRestartNotebookDialogue} from "./language/notebooks/restartNotebookDialogue";
 import {
@@ -56,6 +96,13 @@ import {
     BundleFileSet,
     registerBundleAutocompleteProvider,
 } from "./bundle";
+import {getSubProjects} from "./bundle/BundleFileSet";
+import {
+    promptToSelectBundleTarget,
+    selectActiveProjectFolder,
+} from "./bundle/activeBundleUtils";
+import {RemoteBundleManager} from "./bundle/RemoteBundleManager";
+import {RemoteTargetHostManager} from "./bundle/RemoteTargetHostManager";
 import {showWhatsNewPopup} from "./whatsNewPopup";
 import {BundleValidateModel} from "./bundle/models/BundleValidateModel";
 import {ConfigModel} from "./configuration/models/ConfigModel";
@@ -73,7 +120,7 @@ import {DatabricksDebugConfigurationProvider} from "./run/DatabricksDebugConfigu
 import {BundleVariableModel} from "./bundle/models/BundleVariableModel";
 import {BundleVariableTreeDataProvider} from "./ui/bundle-variables/BundleVariableTreeDataProvider";
 import {ConfigurationTreeViewManager} from "./ui/configuration-view/ConfigurationTreeViewManager";
-import {getCLIDependenciesEnvVars} from "./utils/envVarGenerators";
+import {withOnErrorHandler} from "./utils/onErrorDecorator";
 import {EnvironmentCommands} from "./language/EnvironmentCommands";
 import {PackageManagerTelemetry} from "./language/PackageManagerTelemetry";
 import {WorkspaceFolderManager} from "./vscode-objs/WorkspaceFolderManager";
@@ -87,409 +134,22 @@ import {
 } from "./ui/unity-catalog/UnityCatalogTreeDataProvider";
 import {registerDetailPanel} from "./ui/unity-catalog/registerDetailPanel";
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const packageJson = require("../package.json");
-
 const customWhenContext = new CustomWhenContext();
 
-export async function activate(
-    context: ExtensionContext
-): Promise<PublicApi | undefined> {
-    customWhenContext.setActivated(false);
-    customWhenContext.setDeploymentState("idle");
-
-    const stateStorage = new StateStorage(context);
-    const packageMetadata = await PackageJsonUtils.getMetadata(context);
-
-    if (!(await PackageJsonUtils.checkArchCompat(context))) {
-        return undefined;
-    }
-
-    const telemetry = Telemetry.createDefault();
-    telemetry.setMetadata(Metadata.CONTEXT, getContextMetadata());
-
-    const loggerManager = new LoggerManager(context);
-    if (workspaceConfigs.loggingEnabled) {
-        loggerManager.initLoggers();
-    }
-
-    let cliLogFilePath;
-    try {
-        cliLogFilePath = await loggerManager.getLogFile("databricks-cli");
-    } catch (e) {
-        logging.NamedLogger.getOrCreate(Loggers.Extension).error(
-            "Failed to create a log file for the CLI",
-            e
-        );
-    }
-
-    const cli = new CliWrapper(context, loggerManager, cliLogFilePath);
-
-    // Loggers
-    context.subscriptions.push(
-        telemetry.registerCommand(
-            "databricks.logs.openFolder",
-            loggerManager.openLogFolder,
-            loggerManager
-        ),
-        telemetry.registerCommand(
-            "databricks.bundle.showLogs",
-            () => loggerManager.showOutputChannel("Databricks Bundle Logs"),
-            loggerManager
-        )
-    );
-
-    // Quickstart
-    const quickstartCommands = new QuickstartCommands(context);
-    context.subscriptions.push(
-        telemetry.registerCommand(
-            "databricks.quickstart.open",
-            quickstartCommands.openQuickstartCommand(),
-            quickstartCommands
-        )
-    );
-
-    if (
-        workspace.workspaceFolders === undefined ||
-        workspace.workspaceFolders?.length === 0
-    ) {
-        context.subscriptions.push(
-            telemetry.registerCommand(
-                "databricks.bundle.initNewProject",
-                async () => {
-                    const bundleInitWizard = new BundleInitWizard(
-                        cli,
-                        telemetry
-                    );
-                    await bundleInitWizard.initNewProject();
-                }
-            )
-        );
-        // We show a welcome view when there's no workspace folders, prompting users
-        // to either open a new folder or to initialize a new databricks project.
-        // In both cases we expect the workspace to be reloaded and the extension will
-        // be activated again.
-        return undefined;
-    }
-
-    const workspaceFolderManager = new WorkspaceFolderManager(
-        customWhenContext,
-        stateStorage
-    );
-
-    // Add the databricks binary to the PATH environment variable in terminals
-    context.environmentVariableCollection.clear();
-    context.environmentVariableCollection.persistent = false;
-    context.environmentVariableCollection.append(
-        "PATH",
-        `${path.delimiter}${context.asAbsolutePath("./bin")}`
-    );
-
-    // Export CLI_UPSTREAM vars to the terminal to see if extension users use the CLI directly
-    context.environmentVariableCollection.replace(
-        "DATABRICKS_CLI_UPSTREAM",
-        "databricks-vscode-terminal"
-    );
-    context.environmentVariableCollection.replace(
-        "DATABRICKS_CLI_UPSTREAM_VERSION",
-        packageMetadata.version
-    );
-
-    // We always use bundled terraform and databricks provider.
-    // Updating environment collection means that the variables will be set in all terminals.
-    // If users use different CLI version in their terminal it will only pick the variables if
-    // the dependency versions (that we set together with bin and config paths) match the internal versions of the CLI.
-    const cliDeps = getCLIDependenciesEnvVars(context);
-    for (const [key, value] of Object.entries(cliDeps)) {
-        logging.NamedLogger.getOrCreate(Loggers.Extension).debug(
-            `Setting env var ${key}=${value}`
-        );
-        context.environmentVariableCollection.replace(key, value);
-    }
-    TerraformUtils.updateTerraformCliConfig(
-        context,
-        packageJson.terraformMetadata
-    ).catch((e) => {
-        logging.NamedLogger.getOrCreate(Loggers.Extension).error(
-            "Failed to update terraform cli config",
-            e
-        );
-    });
-
-    logging.NamedLogger.getOrCreate(Loggers.Extension).debug("Metadata", {
-        metadata: packageMetadata,
-    });
-
-    const pythonExtension = extensions.getExtension("ms-python.python");
-    if (pythonExtension === undefined) {
-        window.showWarningMessage(
-            "VSCode Extension for Databricks requires Microsoft Python."
-        );
-        return;
-    }
-    if (!pythonExtension.isActive) {
-        await pythonExtension.activate();
-    }
-
-    const pythonExtensionWrapper = new MsPythonExtensionWrapper(
-        pythonExtension,
-        workspaceFolderManager,
-        stateStorage
-    );
-
-    cli.setPythonExtension(pythonExtensionWrapper);
-
-    // When running inside a Databricks Remote SSH session, activate only the
-    // venv and show a placeholder UI. All other features are inapplicable.
-    const venvPath = process.env["DATABRICKS_VIRTUAL_ENV"];
-    logging.NamedLogger.getOrCreate(Loggers.Extension).debug(
-        "Remote mode check",
-        {
-            databricksRemoteEnv: process.env["DATABRICKS_REMOTE_ENV"],
-            databricksVirtualEnv: venvPath ?? "(not set)",
-        }
-    );
-    if (process.env["DATABRICKS_REMOTE_ENV"] === "1" && venvPath) {
-        logging.NamedLogger.getOrCreate(Loggers.Extension).debug(
-            "Entering remote mode",
-            {venvPath}
-        );
-        customWhenContext.setRemoteMode(true);
-
-        try {
-            await pythonExtensionWrapper.api.environments.updateActiveEnvironmentPath(
-                venvPath
-            );
-        } catch (e) {
-            logging.NamedLogger.getOrCreate(Loggers.Extension).error(
-                "Failed to update active python environment",
-                e
-            );
-        }
-
-        customWhenContext.setActivated(true);
-        return;
-    }
-    logging.NamedLogger.getOrCreate(Loggers.Extension).debug(
-        "Remote mode not activated, continuing normal initialization"
-    );
-
-    // manage contexts for experimental features
-    function updateFeatureContexts() {
-        customWhenContext.updateShowClusterView();
-    }
-
-    function updateStrictSSLEnv() {
-        const httpConfig = workspace.getConfiguration("http");
-        const proxyStrictSSL = httpConfig.get<boolean>("proxyStrictSSL");
-        process.env["DATABRICKS_SDK_PROXY_STRICT_SSL"] = proxyStrictSSL
-            ? "true"
-            : "false";
-    }
-
-    updateFeatureContexts();
-    updateStrictSSLEnv();
-    context.subscriptions.push(
-        workspace.onDidChangeConfiguration(() => {
-            updateFeatureContexts();
-            updateStrictSSLEnv();
-        })
-    );
-
-    // Configuration group
-    const bundleFileSet = new BundleFileSet(workspaceFolderManager);
-    const bundleFileWatcher = new BundleWatcher(
-        bundleFileSet,
-        workspaceFolderManager
-    );
-    const bundleValidateModel = new BundleValidateModel(
-        bundleFileWatcher,
-        cli,
-        workspaceFolderManager
-    );
-
-    const overrideableConfigModel = new OverrideableConfigModel(
-        workspaceFolderManager
-    );
-    const bundlePreValidateModel = new BundlePreValidateModel(
-        bundleFileSet,
-        bundleFileWatcher
-    );
-    const bundleRemoteStateModel = new BundleRemoteStateModel(
-        cli,
-        workspaceFolderManager,
-        workspaceConfigs
-    );
-    const configModel = new ConfigModel(
-        bundleValidateModel,
-        overrideableConfigModel,
-        bundlePreValidateModel,
-        bundleRemoteStateModel,
-        customWhenContext,
-        stateStorage
-    );
-
-    const connectionManager = new ConnectionManager(
-        cli,
-        configModel,
-        workspaceFolderManager,
-        customWhenContext,
-        telemetry
-    );
-    const packageManagerTelemetry = new PackageManagerTelemetry(
-        telemetry,
-        pythonExtensionWrapper,
-        () => {
-            try {
-                return workspaceFolderManager.activeProjectUri.fsPath;
-            } catch {
-                return undefined;
-            }
-        },
-        () => {
-            if (connectionManager.serverless) {
-                return "serverless";
-            }
-            return connectionManager.cluster ? "cluster" : "none";
-        },
-        () => connectionManager.state === "CONNECTED"
-    );
-    context.subscriptions.push(
-        bundleFileWatcher,
-        bundleValidateModel,
-        overrideableConfigModel,
-        bundlePreValidateModel,
-        bundleRemoteStateModel,
-        configModel,
-        connectionManager,
-        commands.registerCommand("databricks.internal.showOutput", () => {
-            loggerManager.showOutputChannel("Databricks Logs");
-        }),
-        connectionManager.onDidChangeState(async () => {
-            telemetry.setMetadata(
-                Metadata.USER,
-                await toUserMetadata(connectionManager)
-            );
-            telemetry.recordEvent(Events.CONNECTION_STATE_CHANGED, {
-                newState: connectionManager.state,
-            });
-        })
-    );
-
-    const metadataService = await connectionManager.startMetadataService();
-    context.subscriptions.push(metadataService);
-
-    const bundleProjectManager = new BundleProjectManager(
-        context,
-        cli,
-        customWhenContext,
-        connectionManager,
-        configModel,
-        bundleFileSet,
-        workspaceFolderManager,
-        telemetry
-    );
-    context.subscriptions.push(
-        bundleProjectManager,
-        telemetry.registerCommand(
-            "databricks.bundle.selectActiveProjectFolder",
-            bundleProjectManager.selectActiveProjectFolder,
-            bundleProjectManager
-        ),
-        telemetry.registerCommand(
-            "databricks.bundle.initNewProject",
-            bundleProjectManager.initNewProject,
-            bundleProjectManager
-        ),
-        telemetry.registerCommand(
-            "databricks.bundle.startManualMigration",
-            bundleProjectManager.startManualMigration,
-            bundleProjectManager
-        )
-    );
-
-    const workspaceFsDataProvider = new WorkspaceFsDataProvider(
-        connectionManager
-    );
-    const workspaceFsFsp = new WorkspaceFsFileSystemProvider(connectionManager);
-    const workspaceFsTreeView = window.createTreeView("workspaceFsView", {
-        treeDataProvider: workspaceFsDataProvider,
-    });
-    const workspaceFsCommands = new WorkspaceFsCommands(
-        workspaceFolderManager,
-        connectionManager,
-        workspaceFsDataProvider,
-        workspaceFsFsp,
-        workspaceFsTreeView
-    );
-
-    context.subscriptions.push(
-        workspace.registerFileSystemProvider(
-            WorkspaceFsFileSystemProvider.scheme,
-            workspaceFsFsp,
-            {
-                isCaseSensitive: true,
-            }
-        ),
-        workspaceFsFsp,
-        workspaceFsTreeView,
-        telemetry.registerCommand(
-            "databricks.wsfs.refresh",
-            workspaceFsCommands.refresh,
-            workspaceFsCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.wsfs.createFolder",
-            workspaceFsCommands.createFolder,
-            workspaceFsCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.wsfs.createFolder.toolbar",
-            workspaceFsCommands.createFolderFromToolbar,
-            workspaceFsCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.wsfs.createNewFile",
-            workspaceFsCommands.createFile,
-            workspaceFsCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.wsfs.createNewFile.toolbar",
-            workspaceFsCommands.createFileFromToolbar,
-            workspaceFsCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.wsfs.openInBrowser",
-            workspaceFsCommands.openInBrowser,
-            workspaceFsCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.wsfs.copyPath",
-            workspaceFsCommands.copyPath,
-            workspaceFsCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.wsfs.delete",
-            workspaceFsCommands.deleteItem,
-            workspaceFsCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.wsfs.uploadFile",
-            workspaceFsCommands.uploadFile,
-            workspaceFsCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.wsfs.uploadFile.toolbar",
-            workspaceFsCommands.uploadFileFromToolbar,
-            workspaceFsCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.wsfs.downloadFile",
-            workspaceFsCommands.downloadFile,
-            workspaceFsCommands
-        )
-    );
-
+/**
+ * Register the Unity Catalog tree view, its commands and the detail panel.
+ * Shared between the normal activation flow and the remote (Databricks Remote
+ * SSH) flow, where Unity Catalog is the only view we surface.
+ */
+function registerUnityCatalog(
+    context: ExtensionContext,
+    connectionManager: ConnectionManager,
+    stateStorage: StateStorage,
+    telemetry: Telemetry,
+    // In remote mode there is no automatic reconnection, so wire the refresh
+    // command to re-establish the connection before refreshing the tree.
+    reconnect?: () => Promise<void>
+): void {
     const unityCatalogTreeDataProvider = new UnityCatalogTreeDataProvider(
         connectionManager,
         stateStorage,
@@ -504,8 +164,12 @@ export async function activate(
         unityCatalogTreeView,
         telemetry.registerCommand(
             "databricks.unityCatalog.refresh",
-            unityCatalogTreeDataProvider.refresh,
-            unityCatalogTreeDataProvider
+            async () => {
+                if (reconnect) {
+                    await reconnect();
+                }
+                unityCatalogTreeDataProvider.refresh();
+            }
         ),
         telemetry.registerCommand(
             "databricks.unityCatalog.refreshNode",
@@ -610,266 +274,41 @@ export async function activate(
             telemetry
         )
     );
+}
 
-    const configureAutocomplete = new ConfigureAutocomplete(
-        context,
-        stateStorage,
-        workspaceFolderManager
-    );
+function registerDocsView(context: ExtensionContext): void {
+    const docsViewTreeDataProvider = new DocsViewTreeDataProvider();
     context.subscriptions.push(
-        configureAutocomplete,
-        telemetry.registerCommand(
-            "databricks.autocomplete.configure",
-            configureAutocomplete.configureCommand,
-            configureAutocomplete
-        )
-    );
-
-    const environmentDependenciesInstaller =
-        new EnvironmentDependenciesInstaller(
-            connectionManager,
-            pythonExtensionWrapper
-        );
-    const featureManager = new FeatureManager<FeatureId>([]);
-    featureManager.registerFeature(
-        "environment.dependencies",
-        () =>
-            new EnvironmentDependenciesVerifier(
-                connectionManager,
-                pythonExtensionWrapper,
-                environmentDependenciesInstaller,
-                configureAutocomplete,
-                packageManagerTelemetry
-            )
-    );
-    const environmentCommands = new EnvironmentCommands(
-        featureManager,
-        pythonExtensionWrapper,
-        environmentDependenciesInstaller,
-        packageManagerTelemetry
-    );
-    context.subscriptions.push(
-        telemetry.registerCommand(
-            "databricks.environment.setup",
-            environmentCommands.setup,
-            environmentCommands
+        window.registerTreeDataProvider(
+            "databricksDocsView",
+            docsViewTreeDataProvider
         ),
-        telemetry.registerCommand(
-            "databricks.environment.refresh",
-            environmentCommands.refresh,
-            environmentCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.environment.selectPythonInterpreter",
-            environmentCommands.selectPythonInterpreter,
-            environmentCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.environment.reinstallDBConnect",
-            async () =>
-                environmentCommands.reinstallDBConnect(
-                    connectionManager.cluster
-                )
-        )
+        docsViewTreeDataProvider
     );
+}
 
-    const dbConnectStatusBarButton = new DbConnectStatusBarButton(
-        featureManager
-    );
-
-    const databricksEnvFileManager = new DatabricksEnvFileManager(
-        workspaceFolderManager,
-        featureManager,
-        connectionManager,
-        configModel
-    );
-
-    const notebookInitScriptManager = new NotebookInitScriptManager(
-        workspaceFolderManager,
-        context,
-        connectionManager,
-        featureManager,
-        pythonExtensionWrapper,
-        databricksEnvFileManager
-    );
-
-    context.subscriptions.push(
-        dbConnectStatusBarButton,
-        notebookInitScriptManager,
-        telemetry.registerCommand(
-            "databricks.notebookInitScript.verify",
-            notebookInitScriptManager.verifyInitScriptCommand,
-            notebookInitScriptManager
-        )
-    );
-
-    notebookInitScriptManager.updateInitScript().catch((e) => {
-        logging.NamedLogger.getOrCreate(Loggers.Extension).error(
-            "Failed to update init script",
-            e
-        );
-        if (e instanceof Error) {
-            window.showWarningMessage(
-                `Failed to update databricks notebook init script. ` +
-                    `Some databricks notebook features may not work. ${e.message}`
-            );
-        }
-    });
-
-    databricksEnvFileManager.init();
-    context.subscriptions.push(
-        databricksEnvFileManager,
-        workspaceFolderManager.onDidChangeActiveProjectFolder(() => {
-            databricksEnvFileManager.dispose();
-            databricksEnvFileManager.init();
-        }),
-        showRestartNotebookDialogue(databricksEnvFileManager)
-    );
-    featureManager.isEnabled("environment.dependencies");
-
-    const codeSynchroniser = new CodeSynchronizer(
-        connectionManager,
-        configModel,
-        cli,
-        packageMetadata
-    );
-
-    const syncCommands = new SyncCommands(codeSynchroniser);
-    context.subscriptions.push(
-        telemetry.registerCommand(
-            "databricks.sync.start",
-            syncCommands.startCommand("incremental"),
-            syncCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.sync.startFull",
-            syncCommands.startCommand("full"),
-            syncCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.sync.stop",
-            syncCommands.stopCommand(),
-            syncCommands
-        )
-    );
-    const configurationDataProvider = new ConfigurationDataProvider(
-        connectionManager,
-        codeSynchroniser,
-        bundleProjectManager,
-        configModel,
-        cli,
-        featureManager,
-        workspaceFolderManager
-    );
-    const configurationView = window.createTreeView("configurationView", {
-        treeDataProvider: configurationDataProvider,
-    });
-
-    const configurationTreeViewManager = new ConfigurationTreeViewManager(
-        configurationView,
-        configModel
-    );
-
-    const clusterModel = new ClusterModel(connectionManager);
-
-    const connectionCommands = new ConnectionCommands(
-        workspaceFsCommands,
-        connectionManager,
-        clusterModel,
-        configModel,
-        cli
-    );
-
-    context.subscriptions.push(
-        configurationDataProvider,
-        configurationView,
-        configurationTreeViewManager,
-        telemetry.registerCommand(
-            "databricks.connection.bundle.selectTarget",
-            connectionCommands.selectTarget,
-            connectionCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.connection.logout",
-            connectionCommands.logoutCommand,
-            connectionCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.connection.configureLogin",
-            connectionCommands.configureLoginCommand,
-            connectionCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.connection.openDatabricksConfigFile",
-            FileUtils.openDatabricksConfigFile
-        ),
-        telemetry.registerCommand(
-            "databricks.connection.attachCluster",
-            connectionCommands.attachClusterCommand(),
-            connectionCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.connection.attachClusterQuickPick",
-            connectionCommands.attachClusterQuickPickCommand(),
-            connectionCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.connection.detachCluster",
-            connectionCommands.detachClusterCommand(),
-            connectionCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.connection.saveNewProfile",
-            connectionCommands.saveNewProfileCommand,
-            connectionCommands
-        )
-    );
-
-    // Cluster group
-    const clusterTreeDataProvider = new ClusterListDataProvider(clusterModel);
-    const clusterCommands = new ClusterCommands(
-        clusterModel,
-        connectionManager
-    );
-
-    context.subscriptions.push(
-        clusterModel,
-        clusterTreeDataProvider,
-        window.registerTreeDataProvider("clusterView", clusterTreeDataProvider),
-
-        telemetry.registerCommand(
-            "databricks.cluster.refresh",
-            clusterCommands.refreshCommand,
-            clusterCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.cluster.filterByAll",
-            clusterCommands.filterCommand("ALL"),
-            clusterCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.cluster.filterByRunning",
-            clusterCommands.filterCommand("RUNNING"),
-            clusterCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.cluster.filterByMe",
-            clusterCommands.filterCommand("ME"),
-            clusterCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.cluster.start",
-            clusterCommands.startClusterCommand,
-            clusterCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.cluster.stop",
-            clusterCommands.stopClusterCommand,
-            clusterCommands
-        )
-    );
-
-    // Bundle resource explorer
+/**
+ * Register the Bundle Resource Explorer tree view and its commands. Shared
+ * between the normal activation flow and the remote (Databricks Remote SSH)
+ * flow. The two flows differ only in whether the Configuration view feeds the
+ * decoration provider - everything else is identical, so the command set
+ * (deploy/run/destroy/…) is registered the same way in both modes.
+ *
+ * Returns the BundleCommands instance, which the run/debug adapter factories
+ * depend on in the normal flow.
+ */
+function registerBundleResourceExplorer(
+    context: ExtensionContext,
+    telemetry: Telemetry,
+    customWhenContext: CustomWhenContext,
+    configModel: ConfigModel,
+    connectionManager: ConnectionManager,
+    bundleRemoteStateModel: BundleRemoteStateModel,
+    bundleValidateModel: BundleValidateModel,
+    // Omitted in remote mode: its Configuration view has no decorated rows
+    // (only the Cluster and Sync components use decorations).
+    configurationDataProvider?: ConfigurationDataProvider
+): BundleCommands {
     const bundleRunTerminalManager = new BundleRunTerminalManager(
         bundleRemoteStateModel
     );
@@ -982,7 +421,21 @@ export async function activate(
         )
     );
 
-    // Bundle variables
+    return bundleCommands;
+}
+
+/**
+ * Register the Bundle Variables tree view and its commands. Shared between the
+ * normal and remote (Databricks Remote SSH) flows.
+ */
+function registerBundleVariablesView(
+    context: ExtensionContext,
+    telemetry: Telemetry,
+    cli: CliWrapper,
+    configModel: ConfigModel,
+    bundleValidateModel: BundleValidateModel,
+    workspaceFolderManager: WorkspaceFolderManager
+): void {
     const bundleVariableModel = new BundleVariableModel(
         configModel,
         bundleValidateModel,
@@ -1008,6 +461,1433 @@ export async function activate(
             bundleVariableModel.deleteBundleVariableFile,
             bundleVariableModel
         )
+    );
+}
+
+export async function activate(
+    context: ExtensionContext
+): Promise<PublicApi | undefined> {
+    customWhenContext.setActivated(false);
+    customWhenContext.setDeploymentState("idle");
+
+    const stateStorage = new StateStorage(context);
+    const packageMetadata = await PackageJsonUtils.getMetadata(context);
+
+    if (!(await PackageJsonUtils.checkArchCompat(context))) {
+        return undefined;
+    }
+
+    // Mode is fully determined by the ambient env vars, so decide it once here
+    // and bake it into the context metadata (rather than re-setting it later).
+    const isRemoteSshMode = HostUtils.isRemoteSshMode();
+
+    const telemetry = Telemetry.createDefault();
+    telemetry.setMetadata(
+        Metadata.CONTEXT,
+        getContextMetadata(isRemoteSshMode ? "remote" : "normal")
+    );
+
+    const loggerManager = new LoggerManager(context);
+    if (workspaceConfigs.loggingEnabled) {
+        loggerManager.initLoggers();
+    }
+
+    let cliLogFilePath;
+    try {
+        cliLogFilePath = await loggerManager.getLogFile("databricks-cli");
+    } catch (e) {
+        logging.NamedLogger.getOrCreate(Loggers.Extension).error(
+            "Failed to create a log file for the CLI",
+            e
+        );
+    }
+
+    const cli = new CliWrapper(context, loggerManager, cliLogFilePath);
+
+    // Surfaces a stale bundled CLI in dev checkouts. Not awaited: it only warns,
+    // and activation shouldn't wait on spawning the CLI to find out.
+    void cli.checkBundledCliVersionForDev(packageMetadata);
+    // Warn if the user has overriden the CLI path, and that overriden CLI is out of date
+    cli.warnOverridenCliDrift(packageMetadata.cliVersion);
+
+    // Loggers
+    context.subscriptions.push(
+        telemetry.registerCommand(
+            "databricks.logs.openFolder",
+            loggerManager.openLogFolder,
+            loggerManager
+        ),
+        telemetry.registerCommand(
+            "databricks.bundle.showLogs",
+            () => loggerManager.showOutputChannel("Databricks Bundle Logs"),
+            loggerManager
+        ),
+        // Opens the "Databricks Logs" output channel. Registered here (before
+        // the no-folder / remote-mode early returns below) so the AI tools
+        // "Show Logs" error affordance works even without an open folder.
+        commands.registerCommand("databricks.internal.showOutput", () => {
+            loggerManager.showOutputChannel("Databricks Logs");
+        })
+    );
+
+    // Quickstart
+    const quickstartCommands = new QuickstartCommands(context);
+    context.subscriptions.push(
+        telemetry.registerCommand(
+            "databricks.quickstart.open",
+            quickstartCommands.openQuickstartCommand(),
+            quickstartCommands
+        )
+    );
+
+    const workspaceFolderManager = new WorkspaceFolderManager(
+        customWhenContext,
+        stateStorage
+    );
+
+    // AI tools: register before the no-folder early return below, since global
+    // installs/updates work without an open workspace folder. Project scope is
+    // gated on a folder being open (see AiToolsCommands / AiToolsManager).
+    const aiToolsManager = new AiToolsManager(
+        cli,
+        stateStorage,
+        workspaceFolderManager,
+        customWhenContext,
+        telemetry,
+        (path) => readFile(path)
+    );
+    const aiToolsCommands = new AiToolsCommands(aiToolsManager, window);
+    context.subscriptions.push(
+        aiToolsManager,
+        aiToolsCommands,
+        telemetry.registerCommand(
+            "databricks.aitools.install",
+            aiToolsCommands.installCommand(),
+            aiToolsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.aitools.checkForUpdates",
+            aiToolsCommands.checkForUpdatesCommand(),
+            aiToolsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.aitools.reload",
+            aiToolsCommands.reloadCommand(),
+            aiToolsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.aitools.update",
+            aiToolsCommands.updateCommand(),
+            aiToolsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.aitools.uninstall",
+            aiToolsCommands.uninstallCommand(),
+            aiToolsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.aitools.addCursorPlugin",
+            aiToolsCommands.addCursorPluginCommand(),
+            aiToolsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.aitools.installAgent",
+            aiToolsCommands.installAgentCommand(),
+            aiToolsCommands
+        )
+    );
+    // Detect install state on activation and, if installed, auto-apply any
+    // available update; otherwise prompt the user (once) to install the tools.
+    // Non-blocking so it doesn't delay activation. Skipped in Remote SSH mode,
+    // where the AI tools commands are gated off (see the remote-mode branch
+    // below) so there is nothing to initialize.
+    if (!isRemoteSshMode) {
+        aiToolsCommands.initializeCommand()();
+    }
+
+    // Unity Gateway Chat. Set up before the no-folder early return below: its
+    // sign-in is per user and needs no folder. With no folder open, nothing
+    // here runs until the extension activates, e.g. when the Databricks view
+    // opens.
+    const unityGatewayConnectionManager = new UnityGatewayConnectionManager(
+        cli,
+        stateStorage
+    );
+    const unityGatewayCommands = new UnityGatewayCommands(
+        cli,
+        unityGatewayConnectionManager,
+        isLanguageModelChatEnabled
+    );
+    const updateUnityGatewayContext = () => {
+        customWhenContext.setUnityGatewayHasSavedProfile(
+            unityGatewayConnectionManager.hasSavedProfile
+        );
+        customWhenContext.setUnityGatewayState(
+            unityGatewayConnectionManager.state
+        );
+    };
+    // Opting out keeps the saved profile, so opting back in restores it.
+    let languageModelChatEnabled: boolean | undefined;
+    const updateLanguageModelChat = () => {
+        const enabled = isLanguageModelChatEnabled();
+        // Only act when it changes, so editing another experiment doesn't
+        // retry a failed restore.
+        if (enabled === languageModelChatEnabled) {
+            return;
+        }
+        languageModelChatEnabled = enabled;
+        customWhenContext.setLanguageModelChatEnabled(enabled);
+        void (enabled
+            ? unityGatewayConnectionManager.restore()
+            : unityGatewayConnectionManager.disconnect());
+    };
+    updateUnityGatewayContext();
+    updateLanguageModelChat();
+    context.subscriptions.push(
+        unityGatewayConnectionManager,
+        registerUnityGatewayChatProvider(
+            unityGatewayConnectionManager,
+            isLanguageModelChatEnabled,
+            workspaceConfigs.onDidChangeExperimentsOptInto
+        ),
+        unityGatewayConnectionManager.onDidChange(updateUnityGatewayContext),
+        workspaceConfigs.onDidChangeExperimentsOptInto(updateLanguageModelChat),
+        telemetry.registerCommand(
+            "databricks.unityGateway.signIn",
+            unityGatewayCommands.signInCommand,
+            unityGatewayCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.unityGateway.signOut",
+            unityGatewayCommands.signOutCommand,
+            unityGatewayCommands
+        )
+    );
+
+    if (
+        workspace.workspaceFolders === undefined ||
+        workspace.workspaceFolders?.length === 0
+    ) {
+        context.subscriptions.push(
+            telemetry.registerCommand(
+                "databricks.bundle.initNewProject",
+                async () => {
+                    const bundleInitWizard = new BundleInitWizard(
+                        cli,
+                        telemetry,
+                        aiToolsManager
+                    );
+                    await bundleInitWizard.initNewProject();
+                }
+            )
+        );
+        // The SSH Tunnel panel is always visible, including on the start screen
+        // with no folder open. There is no ConnectionManager/ClusterModel here,
+        // so wire the command to the standalone (login-then-tunnel) flow.
+        const sshCommands = new SshCommands(cli);
+        context.subscriptions.push(
+            sshCommands,
+            telemetry.registerCommand(
+                "databricks.ssh.startTunnel",
+                sshCommands.startTunnelCommand,
+                sshCommands
+            )
+        );
+        // We show a welcome view when there's no workspace folders, prompting users
+        // to either open a new folder or to initialize a new databricks project.
+        // In both cases we expect the workspace to be reloaded and the extension will
+        // be activated again.
+        return undefined;
+    }
+
+    // Utils. Registered before the remote-mode branch below returns so that
+    // views shared between the normal and remote flows - such as the docs view,
+    // which invokes "databricks.utils.openExternal" - work in both.
+    const utilCommands = new UtilsCommands.UtilsCommands(telemetry);
+    context.subscriptions.push(
+        telemetry.registerCommand(
+            "databricks.utils.openExternal",
+            utilCommands.openExternalCommand(),
+            utilCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.utils.goToDefinition",
+            utilCommands.goToDefinition(),
+            utilCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.utils.copy",
+            utilCommands.copyToClipboardCommand(),
+            utilCommands
+        ),
+        telemetry.registerCommand("databricks.call", (fn) => {
+            if (fn) {
+                fn();
+            }
+        })
+    );
+
+    // The Configuration view exposes an explicit, per-row copy action
+    // ("Copy Target", "Copy Path", …). Each titled command shares the single
+    // clipboard handler; the row's `copy=<kind>` contextValue (stamped in
+    // BaseConfigurationDataProvider.getTreeItem) selects which one shows. The ids
+    // are derived from COPY_KINDS (the single source of truth), hidden from the
+    // command palette (package.json commandPalette when:false), and registered
+    // WITHOUT the telemetry wrapper on purpose — copying a config value is not
+    // an event we track.
+    for (const commandId of COPY_COMMAND_IDS) {
+        context.subscriptions.push(
+            commands.registerCommand(
+                commandId,
+                utilCommands.copyToClipboardCommand(),
+                utilCommands
+            )
+        );
+    }
+
+    // Add the databricks binary to the PATH environment variable in terminals
+    context.environmentVariableCollection.clear();
+    context.environmentVariableCollection.persistent = false;
+    context.environmentVariableCollection.append(
+        "PATH",
+        `${path.delimiter}${context.asAbsolutePath("./bin")}`
+    );
+
+    // Export CLI_UPSTREAM vars to the terminal to see if extension users use the CLI directly
+    context.environmentVariableCollection.replace(
+        "DATABRICKS_CLI_UPSTREAM",
+        "databricks-vscode-terminal"
+    );
+    context.environmentVariableCollection.replace(
+        "DATABRICKS_CLI_UPSTREAM_VERSION",
+        packageMetadata.version
+    );
+
+    logging.NamedLogger.getOrCreate(Loggers.Extension).debug("Metadata", {
+        metadata: packageMetadata,
+    });
+
+    const pythonExtension = extensions.getExtension("ms-python.python");
+    if (pythonExtension === undefined) {
+        window.showWarningMessage(
+            "VSCode Extension for Databricks requires Microsoft Python."
+        );
+        return;
+    }
+    if (!pythonExtension.isActive) {
+        await pythonExtension.activate();
+    }
+
+    const pythonExtensionWrapper = new MsPythonExtensionWrapper(
+        pythonExtension,
+        workspaceFolderManager,
+        stateStorage
+    );
+
+    cli.setPythonExtension(pythonExtensionWrapper);
+
+    // When running inside a Databricks Remote SSH session, activate only the
+    // venv and show a placeholder UI. All other features are inapplicable.
+    const venvPath = process.env["DATABRICKS_VIRTUAL_ENV"];
+    logging.NamedLogger.getOrCreate(Loggers.Extension).debug(
+        "Remote mode check",
+        {
+            databricksRemoteEnv: process.env["DATABRICKS_REMOTE_ENV"],
+            databricksVirtualEnv: venvPath ?? "(not set)",
+        }
+    );
+    if (isRemoteSshMode && venvPath) {
+        logging.NamedLogger.getOrCreate(Loggers.Extension).debug(
+            "Entering remote mode",
+            {venvPath}
+        );
+        customWhenContext.setRemoteMode(true);
+
+        try {
+            await pythonExtensionWrapper.api.environments.updateActiveEnvironmentPath(
+                venvPath
+            );
+        } catch (e) {
+            logging.NamedLogger.getOrCreate(Loggers.Extension).error(
+                "Failed to update active python environment",
+                e
+            );
+        }
+
+        // Surface the Unity Catalog, Docs, Bundle Resource Explorer and Bundle
+        // Variables views, connected using the ambient environment credentials
+        // (no login flow). Unlike normal mode, the bundle target is auto-resolved
+        // (saved target from workspace state, else the bundle default) and the
+        // RemoteBundleManager pins the environment auth on the ConfigModel - see
+        // below.
+        const remoteBundleFileSet = new BundleFileSet(workspaceFolderManager);
+        const remoteBundleFileWatcher = new BundleWatcher(
+            remoteBundleFileSet,
+            workspaceFolderManager
+        );
+        const remoteBundleValidateModel = new BundleValidateModel(
+            remoteBundleFileWatcher,
+            cli,
+            workspaceFolderManager
+        );
+        const remoteOverrideableConfigModel = new OverrideableConfigModel(
+            workspaceFolderManager
+        );
+        const remoteBundlePreValidateModel = new BundlePreValidateModel(
+            remoteBundleFileSet,
+            remoteBundleFileWatcher
+        );
+        // Seed the session host from the ambient DATABRICKS_HOST now, before the
+        // environment connect pins the provider. ConfigModel.init() runs in
+        // parallel with that connect, so a host-less target would otherwise call
+        // normalizeHost("") first and throw (an unhandled rejection at startup,
+        // and a stuck "Invalid host" row if the connect fails). pinAuthProvider
+        // overwrites this with the resolved provider host once connected.
+        const sessionHostEnv = process.env.DATABRICKS_HOST;
+        if (sessionHostEnv) {
+            try {
+                // No target is set yet, so the refresh resolves to {} and can't
+                // reject — but .catch() keeps a future refactor from leaking an
+                // unhandled rejection, the very thing this seeding prevents.
+                remoteBundlePreValidateModel
+                    .setSessionHost(UrlUtils.normalizeHost(sessionHostEnv))
+                    .catch((e) =>
+                        logging.NamedLogger.getOrCreate(
+                            Loggers.Extension
+                        ).error(
+                            "Remote mode: failed to seed the session host",
+                            e
+                        )
+                    );
+            } catch {
+                // Malformed DATABRICKS_HOST: leave it unset; pinAuthProvider
+                // sets the resolved host on connect.
+            }
+        }
+        const remoteBundleRemoteStateModel = new BundleRemoteStateModel(
+            cli,
+            workspaceFolderManager,
+            workspaceConfigs
+        );
+        const remoteConfigModel = new ConfigModel(
+            remoteBundleValidateModel,
+            remoteOverrideableConfigModel,
+            remoteBundlePreValidateModel,
+            remoteBundleRemoteStateModel,
+            customWhenContext,
+            stateStorage,
+            true // remote mode
+        );
+        const remoteConnectionManager = new ConnectionManager(
+            cli,
+            remoteConfigModel,
+            workspaceFolderManager,
+            customWhenContext,
+            telemetry
+        );
+        // ConfigModel.dispose() only disposes its own listeners, not its child
+        // models, so push each one individually (mirroring the normal flow).
+        context.subscriptions.push(
+            remoteBundleFileWatcher,
+            remoteBundleValidateModel,
+            remoteOverrideableConfigModel,
+            remoteBundlePreValidateModel,
+            remoteBundleRemoteStateModel,
+            remoteConfigModel,
+            remoteConnectionManager
+        );
+
+        const remoteTargetHostManager = new RemoteTargetHostManager(
+            remoteConfigModel,
+            remoteBundlePreValidateModel.onDidChangeBundleFiles
+        );
+        const remoteBundleManager = new RemoteBundleManager(
+            remoteConfigModel,
+            remoteConnectionManager,
+            workspaceFolderManager,
+            remoteBundleFileWatcher
+        );
+        context.subscriptions.push(
+            remoteTargetHostManager,
+            remoteBundleManager
+        );
+
+        // The Unity Catalog refresh only needs a fresh connection; re-pinning
+        // the same credentials doesn't re-pull bundle state.
+        const connectRemote = () =>
+            remoteConnectionManager.connectFromEnvironment().catch((e) => {
+                logging.NamedLogger.getOrCreate(Loggers.Extension).error(
+                    "Remote mode: failed to connect Unity Catalog",
+                    e
+                );
+            });
+
+        registerUnityCatalog(
+            context,
+            remoteConnectionManager,
+            stateStorage,
+            telemetry,
+            connectRemote
+        );
+        registerDocsView(context);
+        // The normal-mode provider gates on BundleProjectManager (absent here)
+        // and builds login/cluster/sync/env components that don't apply.
+        const remoteConfigurationDataProvider =
+            new RemoteConfigurationDataProvider(
+                remoteConfigModel,
+                workspaceFolderManager,
+                remoteBundleFileSet,
+                remoteBundleFileWatcher,
+                remoteTargetHostManager
+            );
+        context.subscriptions.push(
+            remoteConfigurationDataProvider,
+            window.createTreeView("configurationView", {
+                treeDataProvider: remoteConfigurationDataProvider,
+            })
+        );
+        registerBundleResourceExplorer(
+            context,
+            telemetry,
+            customWhenContext,
+            remoteConfigModel,
+            remoteConnectionManager,
+            remoteBundleRemoteStateModel,
+            remoteBundleValidateModel
+        );
+        registerBundleVariablesView(
+            context,
+            telemetry,
+            cli,
+            remoteConfigModel,
+            remoteBundleValidateModel,
+            workspaceFolderManager
+        );
+
+        // Normal mode registers these through BundleProjectManager and
+        // ConnectionCommands, whose init runs the login flow.
+        context.subscriptions.push(
+            telemetry.registerCommand(
+                "databricks.bundle.selectActiveProjectFolder",
+                () =>
+                    selectActiveProjectFolder(workspaceFolderManager, () =>
+                        // The workspace folder root, so sibling projects stay
+                        // reachable.
+                        getSubProjects(
+                            workspaceFolderManager.activeWorkspaceFolder.uri
+                        )
+                    )
+            ),
+            telemetry.registerCommand(
+                "databricks.connection.bundle.selectTarget",
+                withOnErrorHandler(
+                    () => promptToSelectBundleTarget(remoteConfigModel),
+                    {popup: {prefix: "Error selecting target."}}
+                )
+            )
+        );
+
+        remoteBundleManager.initialize();
+
+        customWhenContext.setActivated(true);
+        telemetry.recordEvent(Events.EXTENSION_ACTIVATION);
+        return;
+    }
+    logging.NamedLogger.getOrCreate(Loggers.Extension).debug(
+        "Remote mode not activated, continuing normal initialization"
+    );
+
+    // manage contexts for experimental features
+    function updateFeatureContexts() {
+        customWhenContext.updateShowClusterView();
+    }
+
+    updateFeatureContexts();
+    // Resolve TLS strict-SSL through the same layered setting the SDK client
+    // path uses (databricks.proxy.strictSSL -> http.proxyStrictSSL -> true), so
+    // both writers of DATABRICKS_SDK_PROXY_STRICT_SSL agree and verification
+    // stays on by default when nothing is configured.
+    ProxyAgent.applyProxyStrictSSLEnv();
+    context.subscriptions.push(
+        workspace.onDidChangeConfiguration(() => {
+            updateFeatureContexts();
+            ProxyAgent.applyProxyStrictSSLEnv();
+        })
+    );
+
+    // Configuration group
+    const bundleFileSet = new BundleFileSet(workspaceFolderManager);
+    const bundleFileWatcher = new BundleWatcher(
+        bundleFileSet,
+        workspaceFolderManager
+    );
+    const bundleValidateModel = new BundleValidateModel(
+        bundleFileWatcher,
+        cli,
+        workspaceFolderManager
+    );
+
+    const overrideableConfigModel = new OverrideableConfigModel(
+        workspaceFolderManager
+    );
+    const bundlePreValidateModel = new BundlePreValidateModel(
+        bundleFileSet,
+        bundleFileWatcher
+    );
+    const bundleRemoteStateModel = new BundleRemoteStateModel(
+        cli,
+        workspaceFolderManager,
+        workspaceConfigs
+    );
+    const configModel = new ConfigModel(
+        bundleValidateModel,
+        overrideableConfigModel,
+        bundlePreValidateModel,
+        bundleRemoteStateModel,
+        customWhenContext,
+        stateStorage,
+        false // normal mode
+    );
+
+    const connectionManager = new ConnectionManager(
+        cli,
+        configModel,
+        workspaceFolderManager,
+        customWhenContext,
+        telemetry
+    );
+    const packageManagerTelemetry = new PackageManagerTelemetry(
+        telemetry,
+        pythonExtensionWrapper,
+        () => {
+            try {
+                return workspaceFolderManager.activeProjectUri.fsPath;
+            } catch {
+                return undefined;
+            }
+        },
+        () => {
+            if (connectionManager.serverless) {
+                return "serverless";
+            }
+            return connectionManager.cluster ? "cluster" : "none";
+        },
+        () => connectionManager.state === "CONNECTED",
+        () => workspaceConfigs.pythonEnvironmentSetup
+    );
+    context.subscriptions.push(
+        bundleFileWatcher,
+        bundleValidateModel,
+        overrideableConfigModel,
+        bundlePreValidateModel,
+        bundleRemoteStateModel,
+        configModel,
+        connectionManager,
+        connectionManager.onDidChangeState(async () => {
+            telemetry.setMetadata(
+                Metadata.USER,
+                await toUserMetadata(connectionManager)
+            );
+            telemetry.recordEvent(Events.CONNECTION_STATE_CHANGED, {
+                newState: connectionManager.state,
+            });
+        })
+    );
+
+    const metadataService = await connectionManager.startMetadataService();
+    context.subscriptions.push(metadataService);
+
+    const bundleProjectManager = new BundleProjectManager(
+        context,
+        cli,
+        customWhenContext,
+        connectionManager,
+        configModel,
+        bundleFileSet,
+        workspaceFolderManager,
+        telemetry,
+        aiToolsManager
+    );
+    context.subscriptions.push(
+        bundleProjectManager,
+        telemetry.registerCommand(
+            "databricks.bundle.selectActiveProjectFolder",
+            bundleProjectManager.selectActiveProjectFolder,
+            bundleProjectManager
+        ),
+        telemetry.registerCommand(
+            "databricks.bundle.initNewProject",
+            bundleProjectManager.initNewProject,
+            bundleProjectManager
+        ),
+        telemetry.registerCommand(
+            "databricks.bundle.startManualMigration",
+            bundleProjectManager.startManualMigration,
+            bundleProjectManager
+        )
+    );
+
+    const workspaceFsDataProvider = new WorkspaceFsDataProvider(
+        connectionManager
+    );
+    const workspaceFsFsp = new WorkspaceFsFileSystemProvider(connectionManager);
+    const workspaceFsTreeView = window.createTreeView("workspaceFsView", {
+        treeDataProvider: workspaceFsDataProvider,
+    });
+    const workspaceFsCommands = new WorkspaceFsCommands(
+        workspaceFolderManager,
+        connectionManager,
+        workspaceFsDataProvider,
+        workspaceFsFsp,
+        workspaceFsTreeView
+    );
+
+    context.subscriptions.push(
+        workspace.registerFileSystemProvider(
+            WorkspaceFsFileSystemProvider.scheme,
+            workspaceFsFsp,
+            {
+                isCaseSensitive: true,
+            }
+        ),
+        workspaceFsFsp,
+        workspaceFsTreeView,
+        telemetry.registerCommand(
+            "databricks.wsfs.refresh",
+            workspaceFsCommands.refresh,
+            workspaceFsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.wsfs.createFolder",
+            workspaceFsCommands.createFolder,
+            workspaceFsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.wsfs.createFolder.toolbar",
+            workspaceFsCommands.createFolderFromToolbar,
+            workspaceFsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.wsfs.createNewFile",
+            workspaceFsCommands.createFile,
+            workspaceFsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.wsfs.createNewFile.toolbar",
+            workspaceFsCommands.createFileFromToolbar,
+            workspaceFsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.wsfs.openInBrowser",
+            workspaceFsCommands.openInBrowser,
+            workspaceFsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.wsfs.copyPath",
+            workspaceFsCommands.copyPath,
+            workspaceFsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.wsfs.delete",
+            workspaceFsCommands.deleteItem,
+            workspaceFsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.wsfs.uploadFile",
+            workspaceFsCommands.uploadFile,
+            workspaceFsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.wsfs.uploadFile.toolbar",
+            workspaceFsCommands.uploadFileFromToolbar,
+            workspaceFsCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.wsfs.downloadFile",
+            workspaceFsCommands.downloadFile,
+            workspaceFsCommands
+        )
+    );
+
+    registerUnityCatalog(context, connectionManager, stateStorage, telemetry);
+
+    const configureAutocomplete = new ConfigureAutocomplete(
+        context,
+        stateStorage,
+        workspaceFolderManager
+    );
+    context.subscriptions.push(
+        configureAutocomplete,
+        telemetry.registerCommand(
+            "databricks.autocomplete.configure",
+            configureAutocomplete.configureCommand,
+            configureAutocomplete
+        )
+    );
+
+    const environmentDependenciesInstaller =
+        new EnvironmentDependenciesInstaller(
+            connectionManager,
+            pythonExtensionWrapper,
+            telemetry
+        );
+    const featureManager = new FeatureManager<FeatureId>([]);
+    featureManager.registerFeature(
+        "environment.dependencies",
+        () =>
+            new EnvironmentDependenciesVerifier(
+                connectionManager,
+                pythonExtensionWrapper,
+                environmentDependenciesInstaller,
+                configureAutocomplete,
+                packageManagerTelemetry,
+                // Constructed lazily (first isEnabled call is well after
+                // pythonSetupEnvironment is wired), so this reference is safe.
+                () => pythonSetupEnvironment.isVisible()
+            )
+    );
+    // uv-native Python environment setup (python-setup). The detector/gate keep
+    // the entry visible only for uv-suitable projects; projects driven by a
+    // competing manager (pip/poetry/conda) fall back to the legacy checklist.
+    const pythonSetupDetector = new PythonSetupManagerDetector(
+        async (projectRoot) =>
+            collectPackageManagerSignals(
+                projectRoot,
+                await pythonExtensionWrapper.pythonEnvironment
+            )
+    );
+    const pythonSetupClient = new PythonSetupCliClient(
+        () => cli.cliPath,
+        () => {
+            // Overlay the extension's workspace auth onto the ambient
+            // environment, so the CLI provisions against the workspace we are
+            // connected to instead of resolving its own default profile. The
+            // ambient env is the base because `setup-local` shells out to `uv`,
+            // which needs the real OS environment; the Databricks vars are
+            // applied last so a stale ambient DATABRICKS_CONFIG_PROFILE cannot
+            // redirect the run.
+            const authProvider = configModel.authProvider;
+            if (authProvider === undefined) {
+                // Not connected: the setup command is unreachable in this state
+                // (the config view only renders it once logged in), but fall
+                // back to the ambient env rather than throwing out of a spawn.
+                return process.env;
+            }
+            return {
+                ...process.env,
+                ...cli.getSetupLocalEnvVars(authProvider, configModel.target),
+            };
+        }
+    );
+    // Created lazily on first setup output so a user who never runs setup does
+    // not get an empty "Databricks Python Environment Setup" entry in the Output
+    // dropdown.
+    let pythonSetupLogChannel: OutputChannel | undefined;
+    const getPythonSetupLogChannel = () => {
+        if (pythonSetupLogChannel === undefined) {
+            pythonSetupLogChannel = window.createOutputChannel(
+                "Databricks Python Environment Setup"
+            );
+            context.subscriptions.push(pythonSetupLogChannel);
+        }
+        return pythonSetupLogChannel;
+    };
+    const pythonSetupEnvironment = new PythonSetupEnvironmentSetup(
+        makePythonSetupDeps({
+            cli: pythonSetupClient,
+            // activeProjectUri throws when no project is active, so the optional
+            // chaining never applies; honour the string|undefined contract the
+            // orchestrator guards on rather than letting it throw into the flow.
+            projectRoot: () => {
+                try {
+                    return workspaceFolderManager.activeProjectUri.fsPath;
+                } catch {
+                    return undefined;
+                }
+            },
+            detect: (projectRoot) => pythonSetupDetector.detect(projectRoot),
+            setupMode: () => workspaceConfigs.pythonEnvironmentSetup,
+            attachedCompute: () => ({
+                serverless: connectionManager.serverless,
+                cluster: connectionManager.cluster
+                    ? {id: connectionManager.cluster.id}
+                    : undefined,
+                serverlessVersion: connectionManager.serverlessVersion,
+            }),
+            promptServerlessVersion: makeServerlessVersionPrompt({
+                getValidateConfig: () => configModel.get("validateConfig"),
+                // activeProjectUri throws when no project is active; the
+                // collector's contract is string | undefined.
+                projectRoot: () => {
+                    try {
+                        return workspaceFolderManager.activeProjectUri.fsPath;
+                    } catch {
+                        return undefined;
+                    }
+                },
+            }),
+            // Reuses the compute picker's own persistence path: with serverless
+            // already enabled this only records the version -- it does not
+            // re-attach compute, fire a compute-change event, or re-report
+            // COMPUTE_SELECTED. It is decorated @onError, so a failed config
+            // write surfaces a popup to the user instead of rejecting into the
+            // setup flow.
+            persistServerlessVersion: (version) =>
+                connectionManager.enableServerless(version),
+            // Reuses the compute picker, which returns the chosen compute (or
+            // undefined if dismissed); its serverless branch is version-complete.
+            promptSelectCompute: () =>
+                Promise.resolve(
+                    commands.executeCommand<SetupCompute | undefined>(
+                        "databricks.connection.attachClusterQuickPick"
+                    )
+                ),
+            createQuickPick: (...args) => window.createQuickPick(...args),
+            // The preset picker's title names the resolved runtime. Reuse the
+            // attached cluster's already-loaded DBR when its id matches;
+            // otherwise (e.g. a cluster just picked inline, whose attach has not
+            // propagated yet) fetch it by id so the title always carries the
+            // runtime. Any failure degrades to a generic title, so it must not
+            // reject into the setup flow.
+            clusterDbrVersion: async (clusterId) => {
+                try {
+                    const attached = connectionManager.cluster;
+                    if (attached?.id === clusterId) {
+                        return attached.dbrVersion;
+                    }
+                    const apiClient = connectionManager.apiClient;
+                    if (apiClient === undefined) {
+                        return undefined;
+                    }
+                    const cluster = await Cluster.fromClusterId(
+                        apiClient,
+                        clusterId
+                    );
+                    return cluster.dbrVersion;
+                } catch {
+                    return undefined;
+                }
+            },
+            setActiveInterpreter: async (interpreterPath, root) => {
+                await pythonExtensionWrapper.api.environments.updateActiveEnvironmentPath(
+                    interpreterPath,
+                    root
+                );
+            },
+            persistSetupState: (state) => {
+                // Fire-and-forget by design (the setup flow does not block on
+                // the write), but a rejected workspaceState update must not
+                // surface as an unhandled rejection -- a lost state write only
+                // weakens future drift detection, so log and move on.
+                void stateStorage
+                    .set("databricks.pythonSetup.setupState", state)
+                    .catch((e) =>
+                        logging.NamedLogger.getOrCreate(
+                            Loggers.Extension
+                        ).error("Failed to persist python-setup state", e)
+                    );
+            },
+            log: {
+                append: (chunk) => getPythonSetupLogChannel().append(chunk),
+                show: () => getPythonSetupLogChannel().show(true),
+            },
+            reportEnvironment: {
+                extensionVersion: packageMetadata.version,
+                cliVersion: packageMetadata.cliVersion,
+                platform: process.platform,
+            },
+            telemetry,
+        })
+    );
+    context.subscriptions.push(
+        pythonSetupEnvironment,
+        telemetry.registerCommand(
+            "databricks.environment.setupPythonEnv",
+            pythonSetupEnvironment.setup,
+            pythonSetupEnvironment
+        ),
+        // Re-run affordance shared by the ready and out-of-sync rows. Delegates
+        // to the same (re-entrancy-guarded) setup handler; a distinct command id
+        // gives the menu a "Re-run Python setup" title and its own telemetry.
+        telemetry.registerCommand(
+            "databricks.environment.rerunPythonEnv",
+            pythonSetupEnvironment.setup,
+            pythonSetupEnvironment
+        ),
+        // One-click opt-out surfaced as the E_FETCH failure's action button:
+        // turn automated setup off for this project so an existing environment
+        // is used as-is. Workspace scope keeps it scoped and reversible; if no
+        // folder is open we fall back to Global so the write still lands.
+        telemetry.registerCommand(
+            USE_MANUAL_SETUP_COMMAND_ID,
+            async (arg?: {source?: PythonSetupOptOutSource}) => {
+                // The E_FETCH popup passes {source: "error_popup"}; a palette
+                // invocation passes nothing, so anything else reads as palette.
+                const source: PythonSetupOptOutSource =
+                    arg?.source === "error_popup"
+                        ? "error_popup"
+                        : "command_palette";
+                await optOutOfAutomatedPythonSetup(source, {
+                    currentMode: () => workspaceConfigs.pythonEnvironmentSetup,
+                    hasFolder: () =>
+                        (workspace.workspaceFolders?.length ?? 0) > 0,
+                    setManual: (target) =>
+                        workspaceConfigs.setPythonEnvironmentSetup(
+                            "manual",
+                            target
+                        ),
+                    recordOptOut: (report) =>
+                        telemetry.recordManualSetupOptOut(report),
+                    showError: (m) => window.showErrorMessage(m),
+                    showInfo: (m) => window.showInformationMessage(m),
+                });
+            }
+        ),
+        // E_UV_MISSING's "Install uv" button: run uv's official installer in a
+        // terminal so its output stays visible (same pattern as `az login`).
+        // A modal first makes the remote-install step an explicit, informed
+        // choice; the terminal is pinned to PowerShell on Windows (see the spec).
+        // The confirm→open gate lives in `runUvInstall` so it is unit-tested.
+        telemetry.registerCommand(INSTALL_UV_COMMAND_ID, () =>
+            runUvInstall({
+                confirm: async () =>
+                    (await window.showWarningMessage(
+                        UV_INSTALL_CONFIRM_MESSAGE,
+                        {modal: true},
+                        UV_INSTALL_CONFIRM_ACTION
+                    )) === UV_INSTALL_CONFIRM_ACTION,
+                openTerminal: (spec) => {
+                    const terminal = window.createTerminal({
+                        name: spec.name,
+                        shellPath: spec.shellPath,
+                    });
+                    terminal.show();
+                    terminal.sendText(spec.command);
+                },
+            })
+        )
+    );
+    // Drives the config-view row's out-of-sync state: on compute/open/setup
+    // triggers it silently resolves the selected compute's env key via a CLI
+    // dry-run and compares it against the last setup's. Fail-safe throughout
+    // (undefined => "unknown", no drift) and never surfaces UI.
+    const pythonSetupDrift = new PythonSetupDriftManager({
+        // Reuse the exact gate the row is shown under.
+        isVisible: () => pythonSetupEnvironment.isVisible(),
+        getPersistedEnvKey: () =>
+            stateStorage.get("databricks.pythonSetup.setupState")?.envKey,
+        // Cheap, synchronous compute identity (no CLI). A cluster's Spark version
+        // is included so a DBR edit re-checks while a runtime-state change
+        // (RUNNING -> TERMINATED) is skipped. undefined => nothing comparable.
+        getComputeDescriptor: () => {
+            const cluster = connectionManager.cluster;
+            if (cluster) {
+                return `cluster:${cluster.id}:${cluster.sparkVersion}`;
+            }
+            if (connectionManager.serverless) {
+                const version = connectionManager.serverlessVersion;
+                return version === undefined
+                    ? undefined
+                    : `serverless:${version}`;
+            }
+            return undefined;
+        },
+        resolveCurrentEnvKey: async (token) => {
+            // activeProjectUri throws when no project is active; degrade to
+            // "unknown" instead of rejecting into the drift check.
+            let root: string | undefined;
+            try {
+                root = workspaceFolderManager.activeProjectUri.fsPath;
+            } catch {
+                return undefined;
+            }
+            const resolution = resolveComputeFrom({
+                serverless: connectionManager.serverless,
+                cluster: connectionManager.cluster
+                    ? {id: connectionManager.cluster.id}
+                    : undefined,
+                serverlessVersion: connectionManager.serverlessVersion,
+            });
+            if (resolution.status !== "ok") {
+                return undefined;
+            }
+            try {
+                const result = await pythonSetupClient.run(
+                    {
+                        dryRun: true,
+                        compute: resolution.compute,
+                    },
+                    {cwd: root, token}
+                );
+                return result.compute?.envKey;
+            } catch {
+                return undefined;
+            }
+        },
+        recordDrift: (report) => telemetry.recordPythonSetupDrift(report),
+    });
+    context.subscriptions.push(
+        pythonSetupDrift,
+        // Compute target changed (cluster attach/detach/switch).
+        connectionManager.onDidChangeCluster(() =>
+            pythonSetupDrift.check("computeChange")
+        ),
+        // Serverless enable/disable and connection churn flow through state.
+        connectionManager.onDidChangeState(() =>
+            pythonSetupDrift.check("computeChange")
+        ),
+        // Re-picking the serverless version fires neither event above — it only
+        // writes the `serverlessVersion` key — so watch it directly, or a
+        // v4 -> v2 switch would silently miss drift.
+        configModel.onDidChangeKey("serverlessVersion")(async () =>
+            pythonSetupDrift.check("computeChange")
+        ),
+        // A completed setup moves the persisted baseline; re-evaluate to clear
+        // the badge promptly after a successful re-run.
+        pythonSetupEnvironment.onDidChangeState(() =>
+            pythonSetupDrift.check("setupCompleted")
+        )
+    );
+    // Evaluate once now that everything is wired.
+    pythonSetupDrift.check("workspaceOpen");
+
+    // Combine the setup controller's readiness with the drift signal.
+    const pythonSetupEntry = composePythonSetupEntry(
+        pythonSetupEnvironment,
+        pythonSetupDrift
+    );
+    context.subscriptions.push(pythonSetupEntry);
+
+    // Once-per-session adoption gauge: for a project with a uv-native setup on
+    // record, whether its managed venv still exists. Distinct from drift above
+    // (which compares compute env keys) — drift never checks that the venv is
+    // actually present. Measurement only, best-effort, and it derives no env key
+    // of its own: drift already reports env-key mismatch via python_env.drift.
+    const pythonSetupAdoption = new PythonSetupAdoptionManager({
+        projectRoot: () => {
+            try {
+                return workspaceFolderManager.activeProjectUri.fsPath;
+            } catch {
+                return undefined;
+            }
+        },
+        // In a multi-root workspace the single workspace-scoped setupState key
+        // can't be pinned to the active root, so a reading could be a spurious
+        // venvPresent=false; skip rather than emit an untrustworthy one. (The
+        // drift detector shares this single-key limitation; the real fix is the
+        // deferred per-project storage schema.)
+        isAttributable: () => (workspace.workspaceFolders?.length ?? 0) <= 1,
+        isVpexActive: () =>
+            stateStorage.get("databricks.pythonSetup.setupState") !== undefined,
+        getTargetType: () =>
+            connectionManager.serverless
+                ? "serverless"
+                : connectionManager.cluster
+                  ? "cluster"
+                  : "none",
+        savedSetup: () => stateStorage.get("databricks.pythonSetup.setupState"),
+        venvExists: (venvDir) => existsSync(venvInterpreterPath(venvDir)),
+        record: (report) => telemetry.recordPythonSetupAdoption(report),
+    });
+    // A connect-time reading: report once the connection is CONNECTED (so the
+    // compute is attached, though it may be "none" — auth-connected with nothing
+    // selected is a real slice). The manager dedupes per session, so repeated
+    // transitions are safe; firing before connect would latch "none".
+    //
+    // Deliberately NOT fired on setup completion. A first-ever setup's state
+    // write is fire-and-forget and lands on a later microtask, but the setup
+    // controller's state event fires synchronously — so a report() there would
+    // still read the project as not-yet-VPEX-active and emit nothing. Such a
+    // session is instead measured from its next connect; its just-provisioned
+    // venv is already implied by python_env.setup.result = ok.
+    const reportAdoptionIfConnected = () => {
+        if (connectionManager.state === "CONNECTED") {
+            pythonSetupAdoption.report();
+        }
+    };
+    context.subscriptions.push(
+        connectionManager.onDidChangeState(reportAdoptionIfConnected)
+    );
+    // Cover activation while already connected (a reload with a live session),
+    // where onDidChangeState may not fire again.
+    reportAdoptionIfConnected();
+
+    const environmentCommands = new EnvironmentCommands(
+        featureManager,
+        pythonExtensionWrapper,
+        environmentDependenciesInstaller,
+        packageManagerTelemetry
+    );
+    context.subscriptions.push(
+        telemetry.registerCommand(
+            "databricks.environment.setup",
+            // Route to the uv-native flow when it is the active surface for the
+            // project, else the legacy checklist. Every trigger surface (status
+            // bar, config-view rows, palette, the run/debug gate) funnels
+            // through this command, so they all dispatch here.
+            (stepId?: string) =>
+                routeEnvironmentSetup(
+                    pythonSetupEnvironment,
+                    environmentCommands,
+                    stepId
+                )
+        ),
+        telemetry.registerCommand(
+            "databricks.environment.refresh",
+            environmentCommands.refresh,
+            environmentCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.environment.selectPythonInterpreter",
+            environmentCommands.selectPythonInterpreter,
+            environmentCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.environment.reinstallDBConnect",
+            async () =>
+                environmentCommands.reinstallDBConnect(
+                    connectionManager.cluster
+                )
+        )
+    );
+
+    const dbConnectStatusBarButton = new DbConnectStatusBarButton(
+        featureManager
+    );
+
+    const databricksEnvFileManager = new DatabricksEnvFileManager(
+        workspaceFolderManager,
+        featureManager,
+        connectionManager,
+        configModel
+    );
+
+    const notebookInitScriptManager = new NotebookInitScriptManager(
+        workspaceFolderManager,
+        context,
+        connectionManager,
+        featureManager,
+        pythonExtensionWrapper,
+        databricksEnvFileManager
+    );
+
+    context.subscriptions.push(
+        dbConnectStatusBarButton,
+        notebookInitScriptManager,
+        telemetry.registerCommand(
+            "databricks.notebookInitScript.verify",
+            notebookInitScriptManager.verifyInitScriptCommand,
+            notebookInitScriptManager
+        )
+    );
+
+    notebookInitScriptManager.updateInitScript().catch((e) => {
+        logging.NamedLogger.getOrCreate(Loggers.Extension).error(
+            "Failed to update init script",
+            e
+        );
+        if (e instanceof Error) {
+            window.showWarningMessage(
+                `Failed to update databricks notebook init script. ` +
+                    `Some databricks notebook features may not work. ${e.message}`
+            );
+        }
+    });
+
+    databricksEnvFileManager.init();
+    context.subscriptions.push(
+        databricksEnvFileManager,
+        workspaceFolderManager.onDidChangeActiveProjectFolder(() => {
+            databricksEnvFileManager.dispose();
+            databricksEnvFileManager.init();
+        }),
+        showRestartNotebookDialogue(databricksEnvFileManager)
+    );
+    featureManager.isEnabled("environment.dependencies");
+
+    const codeSynchroniser = new CodeSynchronizer(
+        connectionManager,
+        configModel,
+        cli,
+        packageMetadata
+    );
+
+    const syncCommands = new SyncCommands(codeSynchroniser);
+    context.subscriptions.push(
+        telemetry.registerCommand(
+            "databricks.sync.start",
+            syncCommands.startCommand("incremental"),
+            syncCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.sync.startFull",
+            syncCommands.startCommand("full"),
+            syncCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.sync.stop",
+            syncCommands.stopCommand(),
+            syncCommands
+        )
+    );
+    const configurationDataProvider = new ConfigurationDataProvider(
+        connectionManager,
+        codeSynchroniser,
+        bundleProjectManager,
+        configModel,
+        cli,
+        featureManager,
+        workspaceFolderManager,
+        aiToolsManager,
+        unityGatewayConnectionManager,
+        isLanguageModelChatEnabled,
+        workspaceConfigs.onDidChangeExperimentsOptInto,
+        pythonSetupEntry
+    );
+    const configurationView = window.createTreeView("configurationView", {
+        treeDataProvider: configurationDataProvider,
+    });
+
+    const configurationTreeViewManager = new ConfigurationTreeViewManager(
+        configurationView,
+        configModel
+    );
+
+    const clusterModel = new ClusterModel(connectionManager);
+
+    const connectionCommands = new ConnectionCommands(
+        workspaceFsCommands,
+        connectionManager,
+        clusterModel,
+        configModel,
+        cli,
+        workspaceFolderManager,
+        // Only prompt for a serverless environment version when the uv-native
+        // setup is the active surface for this project; a project driven by a
+        // competing manager keeps the plain, version-less serverless enable.
+        () => pythonSetupEnvironment.isVisible()
+    );
+
+    context.subscriptions.push(
+        configurationDataProvider,
+        configurationView,
+        configurationTreeViewManager,
+        telemetry.registerCommand(
+            "databricks.connection.bundle.selectTarget",
+            connectionCommands.selectTarget,
+            connectionCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.connection.logout",
+            connectionCommands.logoutCommand,
+            connectionCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.connection.configureLogin",
+            connectionCommands.configureLoginCommand,
+            connectionCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.connection.openDatabricksConfigFile",
+            FileUtils.openDatabricksConfigFile
+        ),
+        telemetry.registerCommand(
+            "databricks.connection.attachCluster",
+            connectionCommands.attachClusterCommand(),
+            connectionCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.connection.attachClusterQuickPick",
+            connectionCommands.attachClusterQuickPickCommand(),
+            connectionCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.connection.detachCluster",
+            connectionCommands.detachClusterCommand(),
+            connectionCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.connection.saveNewProfile",
+            connectionCommands.saveNewProfileCommand,
+            connectionCommands
+        )
+    );
+
+    // SSH tunnel (remote development) group
+    const sshCommands = new SshCommands(cli, connectionManager, clusterModel);
+    context.subscriptions.push(
+        sshCommands,
+        telemetry.registerCommand(
+            "databricks.ssh.startTunnel",
+            sshCommands.startTunnelCommand,
+            sshCommands
+        )
+    );
+
+    // Cluster group
+    const clusterTreeDataProvider = new ClusterListDataProvider(clusterModel);
+    const clusterCommands = new ClusterCommands(
+        clusterModel,
+        connectionManager
+    );
+
+    context.subscriptions.push(
+        clusterModel,
+        clusterTreeDataProvider,
+        window.registerTreeDataProvider("clusterView", clusterTreeDataProvider),
+
+        telemetry.registerCommand(
+            "databricks.cluster.refresh",
+            clusterCommands.refreshCommand,
+            clusterCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.cluster.filterByAll",
+            clusterCommands.filterCommand("ALL"),
+            clusterCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.cluster.filterByRunning",
+            clusterCommands.filterCommand("RUNNING"),
+            clusterCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.cluster.filterByMe",
+            clusterCommands.filterCommand("ME"),
+            clusterCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.cluster.start",
+            clusterCommands.startClusterCommand,
+            clusterCommands
+        ),
+        telemetry.registerCommand(
+            "databricks.cluster.stop",
+            clusterCommands.stopClusterCommand,
+            clusterCommands
+        )
+    );
+
+    // Bundle resource explorer
+    const bundleCommands = registerBundleResourceExplorer(
+        context,
+        telemetry,
+        customWhenContext,
+        configModel,
+        connectionManager,
+        bundleRemoteStateModel,
+        bundleValidateModel,
+        configurationDataProvider
+    );
+
+    // Bundle variables
+    registerBundleVariablesView(
+        context,
+        telemetry,
+        cli,
+        configModel,
+        bundleValidateModel,
+        workspaceFolderManager
     );
 
     // Run/debug group
@@ -1079,14 +1959,7 @@ export async function activate(
         debugWorkflowFactory
     );
 
-    const docsViewTreeDataProvider = new DocsViewTreeDataProvider();
-    context.subscriptions.push(
-        window.registerTreeDataProvider(
-            "databricksDocsView",
-            docsViewTreeDataProvider
-        ),
-        docsViewTreeDataProvider
-    );
+    registerDocsView(context);
 
     showQuickStartOnFirstUse(context).catch((e) => {
         logging.NamedLogger.getOrCreate("Extension").error(
@@ -1094,31 +1967,6 @@ export async function activate(
             e
         );
     });
-
-    // Utils
-    const utilCommands = new UtilsCommands.UtilsCommands(telemetry);
-    context.subscriptions.push(
-        telemetry.registerCommand(
-            "databricks.utils.openExternal",
-            utilCommands.openExternalCommand(),
-            utilCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.utils.goToDefinition",
-            utilCommands.goToDefinition(),
-            utilCommands
-        ),
-        telemetry.registerCommand(
-            "databricks.utils.copy",
-            utilCommands.copyToClipboardCommand(),
-            utilCommands
-        ),
-        telemetry.registerCommand("databricks.call", (fn) => {
-            if (fn) {
-                fn();
-            }
-        })
-    );
 
     // generate a json schema for bundle root and load a custom provider into
     // redhat.vscode-yaml extension to validate bundle config files with this schema

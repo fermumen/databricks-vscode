@@ -5,6 +5,30 @@ import {Mutex} from "../locking";
 import lodash from "lodash";
 import {StoredFavoriteRef} from "../ui/unity-catalog/types";
 
+/**
+ * Persisted after a successful uv-native Python environment setup, so a later
+ * change of compute target can be detected as drift (the provisioned env no
+ * longer matches the selected target) and surfaced to the user.
+ *
+ * - `envKey`: the CLI's resolved environment key for the target that was set up
+ *   (e.g. `serverless/serverless-v5`), from the setup-local result.
+ * - `pythonVersion`: the interpreter minor version that was provisioned (e.g.
+ *   `3.12`).
+ * - `timestamp`: ISO-8601 time of the successful setup.
+ * - `venvPath`: the absolute venv folder. A uv workspace member shares the
+ *   venv at the workspace root.
+ * - `projectRoot`: the project folder of the setup.
+ *
+ * State saved by older versions has no `venvPath` or `projectRoot`.
+ */
+export interface PythonSetupState {
+    envKey: string;
+    pythonVersion: string;
+    timestamp: string;
+    venvPath?: string;
+    projectRoot?: string;
+}
+
 /* eslint-disable @typescript-eslint/naming-convention */
 type KeyInfo<V> = {
     location: "global" | "workspace";
@@ -75,6 +99,43 @@ const StorageConfigurations = {
     "databricks.lastInstalledExtensionVersion": withType<string>()({
         location: "global",
         defaultValue: "0.0.0",
+    }),
+
+    // Per-project: the environment provisioned by the last successful
+    // python-setup run, used to detect drift when the compute target changes.
+    "databricks.pythonSetup.setupState": withType<PythonSetupState>()({
+        location: "workspace",
+    }),
+
+    // Caches where Databricks AI tools were installed ("project" or "global")
+    // so update/list commands know which scope and cwd to use. The presence of
+    // `.databricks/aitools/skills/.state.json` remains the source of truth for
+    // "are they installed?"; this only caches the resolved location.
+    "databricks.aitools.installLocation": withType<"project" | "global">()({
+        location: "global",
+    }),
+
+    // Tracks whether the user has opted out of the prompt offering to install
+    // Databricks AI tools. Only set when the user declines the install *and*
+    // asks not to be shown it again (the "Don't show again" affordance); a plain
+    // dismissal leaves this false so the prompt can reappear on a later
+    // activation.
+    "databricks.aitools.hideInstallPrompt": withType<boolean>()({
+        location: "global",
+        defaultValue: false,
+    }),
+
+    // The ~/.databrickscfg profile of the Unity Gateway sign-in, with its host
+    // and workspace id. Global because that sign-in is per user, separate from
+    // each project's bundle sign-in. Both are checked on restore, since the
+    // config file can differ between windows, and on a unified host several
+    // workspaces share the host.
+    "databricks.unityGateway.savedProfile": withType<{
+        profile: string;
+        host: string;
+        workspaceId: string;
+    }>()({
+        location: "global",
     }),
 };
 

@@ -1,8 +1,6 @@
 import {
     CancellationToken,
     Context,
-    ProductVersion,
-    WorkspaceClient,
     logging,
 } from "@databricks/sdk-experimental";
 import {
@@ -14,10 +12,7 @@ import {DatabricksCliAuthProvider} from "./AuthProvider";
 import {orchestrate, OrchestrationLoopError, Step} from "./orchestrate";
 import {Loggers} from "../../logger";
 import {execFile} from "../../cli/CliWrapper";
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const extensionVersion = require("../../../package.json")
-    .version as ProductVersion;
+import {ProxyAgent} from "../../utils";
 
 type StepName = "tryLogin" | "login";
 
@@ -111,7 +106,7 @@ export class DatabricksCliCheck implements Disposable {
     private async tryLogin(
         cancellationToken?: CancellationToken
     ): Promise<boolean> {
-        const workspaceClient = new WorkspaceClient(
+        const workspaceClient = await ProxyAgent.createWorkspaceClient(
             {
                 host: this.authProvider.host.toString(),
                 authType: "databricks-cli",
@@ -121,10 +116,7 @@ export class DatabricksCliCheck implements Disposable {
                     ? {workspaceId: this.authProvider.workspaceId}
                     : {}),
             },
-            {
-                product: "databricks-vscode",
-                productVersion: extensionVersion,
-            }
+            this.authProvider.host
         );
 
         try {
@@ -139,13 +131,24 @@ export class DatabricksCliCheck implements Disposable {
     }
 
     private async login(cancellationToken?: CancellationToken): Promise<void> {
-        const host = this.authProvider.host.toString().replace(/\/+$/, "");
+        // Always pass --host. Passing only --profile is not enough when the
+        // profile does not exist yet (the common case: creating a new OAuth
+        // profile). With no host to resolve, the CLI falls back to the public
+        // login.databricks.com page instead of the workspace the user typed.
+        // We still pass --profile when we have one so re-login targets the
+        // right profile when several profiles share a host (see #1877); the
+        // CLI accepts --host and --profile together.
+        let host = this.authProvider.host.toString().replace(/\/+$/, "");
+        // Preserve SPOG workspace routing so re-login does not drop the
+        // workspace id from an existing profile. execFile passes args verbatim
+        // (no shell), so the "?" needs no quoting here.
+        if (this.authProvider.workspaceId) {
+            host += `?w=${this.authProvider.workspaceId}`;
+        }
         const profile = this.authProvider.profile;
-        const args = ["auth", "login"];
+        const args = ["auth", "login", "--host", host];
         if (profile) {
             args.push("--profile", profile);
-        } else {
-            args.push("--host", host);
         }
         // Bound the browser challenge so a non-completing OAuth flow (e.g. WSL)
         // fails fast instead of stalling on the CLI's 1-hour default.
@@ -163,9 +166,13 @@ export class DatabricksCliCheck implements Disposable {
             // WSL). Point the user at running the same command themselves in a
             // terminal, where the browser flow can be completed (or copied to
             // the host browser), instead of surfacing only the raw CLI error.
+            // Single-quote the host: with a SPOG workspace id it contains a
+            // "?w=..." query string, and an unquoted "?" is a glob in
+            // zsh/bash, so a copy-pasted command would fail with
+            // "no matches found" before the CLI runs.
             const manualCommand = profile
-                ? `databricks auth login --profile ${profile}`
-                : `databricks auth login --host ${host}`;
+                ? `databricks auth login --host '${host}' --profile ${profile}`
+                : `databricks auth login --host '${host}'`;
             throw new Error(
                 `Login failed with Databricks CLI: ${e.stderr || e.message}. ` +
                     `Try running \`${manualCommand}\` in a terminal to complete the login, then reload.`

@@ -1,4 +1,6 @@
 import {
+    Config,
+    EnvironmentLoader,
     WorkspaceClient,
     ApiClient,
     logging,
@@ -15,10 +17,19 @@ import {
 import {LoginWizard, getProfilesForHost} from "./LoginWizard";
 import {ClusterManager} from "../cluster/ClusterManager";
 import {DatabricksWorkspace} from "./DatabricksWorkspace";
+import {
+    ConnectionState,
+    WorkspaceConnectionModel,
+} from "./models/WorkspaceConnectionModel";
 import {CustomWhenContext} from "../vscode-objs/CustomWhenContext";
 import {ConfigModel} from "./models/ConfigModel";
 import {onError, withOnErrorHandler} from "../utils/onErrorDecorator";
-import {AuthProvider, ProfileAuthProvider} from "./auth/AuthProvider";
+import {
+    AuthProvider,
+    PersonalAccessTokenAuthProvider,
+    ProfileAuthProvider,
+} from "./auth/AuthProvider";
+import {normalizeHost} from "../utils/urlUtils";
 import {Mutex} from "../locking";
 import {MetadataService} from "./auth/MetadataService";
 import {Events, Telemetry} from "../telemetry";
@@ -26,10 +37,11 @@ import {AutoLoginSource, ManualLoginSource} from "../telemetry/constants";
 import {Barrier} from "../locking/Barrier";
 import {WorkspaceFolderManager} from "../vscode-objs/WorkspaceFolderManager";
 import {ProjectConfigFile} from "../file-managers/ProjectConfigFile";
+import {isSupportedVersion} from "../python-setup/utils/serverlessVersionScoring";
 
 // eslint-disable-next-line @typescript-eslint/naming-convention
 const {NamedLogger} = logging;
-export type ConnectionState = "CONNECTED" | "CONNECTING" | "DISCONNECTED";
+export type {ConnectionState};
 
 /**
  * The ConnectionManager maintains the connection state to Databricks
@@ -39,20 +51,18 @@ export type ConnectionState = "CONNECTED" | "CONNECTING" | "DISCONNECTED";
  */
 export class ConnectionManager implements Disposable {
     private disposables: Disposable[] = [];
-    private _state: ConnectionState = "DISCONNECTED";
+    private readonly connection = new WorkspaceConnectionModel();
+    private _connectionError?: string;
     private loginLogoutMutex: Mutex = new Mutex();
     private savedAuthMutex: Mutex = new Mutex();
     private configureLoginMutex: Mutex = new Mutex();
 
-    private _workspaceClient?: WorkspaceClient;
     private _syncDestinationMapper?: SyncDestinationMapper;
     private _clusterManager?: ClusterManager;
-    private _databricksWorkspace?: DatabricksWorkspace;
     private _metadataService: MetadataService;
     private _serverlessEnabled: boolean = false;
+    private _serverlessVersion: string | undefined;
 
-    private readonly onDidChangeStateEmitter: EventEmitter<ConnectionState> =
-        new EventEmitter();
     private readonly onDidChangeClusterEmitter: EventEmitter<
         Cluster | undefined
     > = new EventEmitter();
@@ -60,12 +70,25 @@ export class ConnectionManager implements Disposable {
         SyncDestinationMapper | undefined
     > = new EventEmitter();
 
-    public readonly onDidChangeState = this.onDidChangeStateEmitter.event;
+    public readonly onDidChangeState = this.connection.onDidChangeState;
     public readonly onDidChangeCluster = this.onDidChangeClusterEmitter.event;
     public readonly onDidChangeSyncDestination =
         this.onDidChangeSyncDestinationEmitter.event;
 
     private readonly initialization = new Barrier();
+    // Set once init() has resolved the initialization barrier. Guards callers
+    // (e.g. the SSH tunnel flow) that must not `await login()` before init(),
+    // since that would block on the barrier forever when the workspace is not a
+    // Databricks project and init() is never called.
+    private _initialized = false;
+
+    /**
+     * Whether the connection manager has been initialized (init() ran).
+     * Only true once the workspace has been set up as a Databricks project.
+     */
+    get isInitialized(): boolean {
+        return this._initialized;
+    }
 
     get projectRoot() {
         return this.workspaceFolderManager.activeProjectUri;
@@ -81,6 +104,12 @@ export class ConnectionManager implements Disposable {
         this._metadataService = new MetadataService(
             undefined,
             NamedLogger.getOrCreate("Extension")
+        );
+        this.disposables.push(
+            this.connection,
+            this.connection.onDidChangeState((state) =>
+                this.customWhenContext.setLoggedIn(state === "CONNECTED")
+            )
         );
     }
 
@@ -158,7 +187,21 @@ export class ConnectionManager implements Disposable {
         const autoEnable =
             serverless === undefined && !this.cluster && computeId === "auto";
         if (serverless || autoEnable) {
-            await this.enableServerless();
+            // Load the persisted version (if any) so it survives a reload
+            // without re-prompting. A version-less serverless config (older
+            // extensions, or serverless enabled before a version was chosen)
+            // leaves this undefined, and consumers fall back to their default.
+            // The stored value is untrusted (config files are hand-editable and
+            // may predate the supported range), so re-validate here rather than
+            // exposing a value the `--serverless-version` flag would reject --
+            // an unsupported version is dropped to undefined (scored default).
+            const storedVersion =
+                await this.configModel.get("serverlessVersion");
+            this._serverlessVersion =
+                storedVersion !== undefined && isSupportedVersion(storedVersion)
+                    ? storedVersion
+                    : undefined;
+            await this.enableServerless(this._serverlessVersion);
         } else {
             await this.disableServerless();
         }
@@ -212,12 +255,23 @@ export class ConnectionManager implements Disposable {
                     )
                 )
             );
+            this._initialized = true;
             this.initialization.resolve();
         }
     }
 
     get state(): ConnectionState {
-        return this._state;
+        return this.connection.state;
+    }
+
+    /**
+     * The error message from the most recent failed connection attempt, if any.
+     * Cleared on a successful connection. Used to surface why an
+     * environment-based connection (remote mode) failed instead of showing an
+     * empty view.
+     */
+    get connectionError(): string | undefined {
+        return this._connectionError;
     }
 
     get cluster(): Cluster | undefined {
@@ -228,12 +282,22 @@ export class ConnectionManager implements Disposable {
         return this._serverlessEnabled;
     }
 
+    /**
+     * The persisted serverless environment version (the CLI's bare-integer
+     * `--serverless-version` value, e.g. "5"), or undefined when serverless is
+     * not selected or no version has been chosen yet. Consumers treat undefined
+     * as "fall back to the scored default".
+     */
+    get serverlessVersion(): string | undefined {
+        return this._serverlessEnabled ? this._serverlessVersion : undefined;
+    }
+
     get syncDestinationMapper(): SyncDestinationMapper | undefined {
         return this._syncDestinationMapper;
     }
 
     get databricksWorkspace(): DatabricksWorkspace | undefined {
-        return this._databricksWorkspace;
+        return this.connection.databricksWorkspace;
     }
 
     /**
@@ -242,11 +306,11 @@ export class ConnectionManager implements Disposable {
      * make sure to listen to the onChangeCluster event and update as appropriate.
      */
     get workspaceClient(): WorkspaceClient | undefined {
-        return this._workspaceClient;
+        return this.connection.workspaceClient;
     }
 
     get apiClient(): ApiClient | undefined {
-        return this._workspaceClient?.apiClient;
+        return this.connection.apiClient;
     }
 
     get authType(): SdkAuthType | undefined {
@@ -259,6 +323,70 @@ export class ConnectionManager implements Disposable {
         if (this.state !== "CONNECTED" || force) {
             await this.configureLogin("api");
         }
+    }
+
+    /**
+     * Connect using the host and token that the SDK resolves from the ambient
+     * environment (e.g. the DATABRICKS_HOST / DATABRICKS_TOKEN variables that
+     * the Databricks Remote SSH session injects). Only PAT credentials are
+     * supported here - the remote environment always provides a token, so we
+     * fail fast if one isn't present rather than attempting other auth types.
+     *
+     * Unlike the normal login flow this does not depend on a bundle/config
+     * project (host + target) and skips all sync/cluster/config machinery. It's
+     * used in Databricks Remote SSH sessions where only Unity Catalog is
+     * surfaced and credentials come from the environment.
+     */
+    async connectFromEnvironment(authProvider?: AuthProvider): Promise<void> {
+        await this.loginLogoutMutex.synchronise(async () => {
+            // We intentionally inline the connect/disconnect steps here rather
+            // than delegating to _connect()/disconnect(): both of those acquire
+            // loginLogoutMutex, which is non-reentrant, so calling them while we
+            // already hold it would deadlock. We also deliberately skip the
+            // sync/cluster/config-project machinery they run, since remote mode
+            // only needs a workspace client for the Unity Catalog view.
+            this._connectionError = undefined;
+            // Clear any previously-connected client before re-authenticating so
+            // a concurrent getChildren() (which only checks workspaceClient)
+            // can't briefly use a stale client during a reconnect.
+            this.connection.disconnect();
+            this.beginConnecting();
+            try {
+                // The authProvider is only injected by tests; in production it
+                // is resolved solely from the ambient environment. We use an
+                // explicit EnvironmentLoader (instead of the SDK default chain)
+                // so a stray ~/.databrickscfg DEFAULT profile can't silently
+                // satisfy the checks below and connect to the wrong workspace -
+                // if the remote env didn't inject credentials, we fail fast.
+                if (authProvider === undefined) {
+                    const config = new Config({
+                        loaders: [new EnvironmentLoader()],
+                    });
+                    await config.ensureResolved();
+                    if (config.host === undefined) {
+                        throw new Error(
+                            "No Databricks host found in the environment"
+                        );
+                    }
+                    if (config.token === undefined) {
+                        throw new Error(
+                            "No Databricks token found in the environment"
+                        );
+                    }
+                    authProvider = new PersonalAccessTokenAuthProvider(
+                        normalizeHost(config.host),
+                        config.token,
+                        this.cli
+                    );
+                }
+                await this.connection.connect(authProvider);
+            } catch (e) {
+                this._connectionError =
+                    e instanceof Error ? e.message : String(e);
+                this.connection.disconnect();
+                throw e;
+            }
+        });
     }
 
     private async loginWithSavedAuth(source: AutoLoginSource) {
@@ -298,7 +426,7 @@ export class ConnectionManager implements Disposable {
     @onError({popup: {prefix: "Failed to login."}})
     @Mutex.synchronise("loginLogoutMutex")
     private async resolveAuth() {
-        this.updateState("CONNECTING");
+        this.beginConnecting();
         const host = await this.configModel.get("host");
         const target = this.configModel.target;
         if (host === undefined || target === undefined) {
@@ -373,35 +501,35 @@ export class ConnectionManager implements Disposable {
 
     @Mutex.synchronise("loginLogoutMutex")
     private async _connect(authProvider: AuthProvider) {
-        this.updateState("CONNECTING");
-        this._workspaceClient = await authProvider.getWorkspaceClient();
-        this._databricksWorkspace = await DatabricksWorkspace.load(
-            this._workspaceClient,
-            authProvider
-        );
-        await this.configModel.set(
-            "authProfile",
-            authProvider.toJSON().profile as string | undefined
-        );
+        let authProviderFailure: {error: unknown} | undefined;
+        await this.connection.connect(authProvider, async () => {
+            await this.configModel.set(
+                "authProfile",
+                authProvider.toJSON().profile as string | undefined
+            );
 
-        await this.updateSyncDestinationMapper();
-        await this.updateClusterManager();
-        await this.updateServerless();
-        await this._metadataService.setApiClient(this.apiClient);
-        try {
-            await this.configModel.setAuthProvider(authProvider);
-        } finally {
-            this.updateState("CONNECTED");
+            await this.updateSyncDestinationMapper();
+            await this.updateClusterManager();
+            await this.updateServerless();
+            await this._metadataService.setApiClient(this.apiClient);
+            // Runs bundle validate, which fails on a broken databricks.yml.
+            // Report that, but stay connected.
+            try {
+                await this.configModel.setAuthProvider(authProvider);
+            } catch (e) {
+                authProviderFailure = {error: e};
+            }
+        });
+        if (authProviderFailure) {
+            throw authProviderFailure.error;
         }
     }
 
     @Mutex.synchronise("loginLogoutMutex")
     private async disconnect() {
-        this._workspaceClient = undefined;
-        this._databricksWorkspace = undefined;
+        this.connection.disconnect();
         await this.updateClusterManager();
         await this.updateSyncDestinationMapper();
-        this.updateState("DISCONNECTED");
     }
 
     @onError({popup: {prefix: "Can't logout."}})
@@ -465,7 +593,15 @@ export class ConnectionManager implements Disposable {
     @onError({
         popup: {prefix: "Failed to enable serverless mode."},
     })
-    async enableServerless() {
+    async enableServerless(version?: string) {
+        // Persist the version whenever one is supplied, even if serverless is
+        // already enabled -- this is how re-picking the version (without
+        // toggling compute) is saved. `undefined` leaves any existing persisted
+        // version in place rather than clearing it.
+        if (version !== undefined && version !== this._serverlessVersion) {
+            this._serverlessVersion = version;
+            await this.configModel.set("serverlessVersion", version);
+        }
         if (!this._serverlessEnabled) {
             this._serverlessEnabled = true;
             await this.configModel.set("serverless", true);
@@ -485,7 +621,12 @@ export class ConnectionManager implements Disposable {
     async disableServerless() {
         if (this._serverlessEnabled) {
             this._serverlessEnabled = false;
+            // Clear the version too: it only has meaning while serverless is
+            // the selected compute, and leaving a stale value would let it
+            // resurface if serverless is re-enabled later without re-picking.
+            this._serverlessVersion = undefined;
             await this.configModel.set("serverless", false);
+            await this.configModel.set("serverlessVersion", undefined);
             this.customWhenContext.setServerless(false);
             this.onDidChangeClusterEmitter.fire(undefined);
         }
@@ -513,17 +654,13 @@ export class ConnectionManager implements Disposable {
         await this.configModel.set("remoteRootPath", undefined);
     }
 
-    private updateState(newState: ConnectionState) {
+    private beginConnecting() {
         if (!this.loginLogoutMutex.locked) {
             throw new Error(
-                "updateState must be called after aquireing the state mutex"
+                "beginConnecting must be called after acquiring the state mutex"
             );
         }
-        if (this._state !== newState) {
-            this._state = newState;
-            this.onDidChangeStateEmitter.fire(this._state);
-        }
-        this.customWhenContext.setLoggedIn(this._state === "CONNECTED");
+        this.connection.beginConnecting();
     }
 
     async startCluster() {
@@ -544,7 +681,7 @@ export class ConnectionManager implements Disposable {
     }
 
     async waitForConnect(): Promise<void> {
-        if (this._state !== "CONNECTED") {
+        if (this.state !== "CONNECTED") {
             return await new Promise((resolve) => {
                 const changeListener = this.onDidChangeState((e) => {
                     if (e === "CONNECTED") {

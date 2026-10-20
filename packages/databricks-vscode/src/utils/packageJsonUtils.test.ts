@@ -54,6 +54,9 @@ describe(__filename, () => {
                 vsixArch: "vsixArch",
             },
             commitSha: "commitSha",
+            cli: {
+                version: "1.11.0",
+            },
         };
         await writeFile(path, JSON.stringify(metaData));
 
@@ -68,6 +71,7 @@ describe(__filename, () => {
             cliArch: "cliArch",
             vsixArch: "vsixArch",
             commitSha: "commitSha",
+            cliVersion: "1.11.0",
         });
     });
 
