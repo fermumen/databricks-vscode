@@ -5,8 +5,9 @@ This folder is a minimal Databricks Asset Bundle used to smoke-test the local
 
 ## Prerequisites
 
-- Databricks CLI installed and authenticated for the workspace in
-  `databricks.yml`.
+- `databricks.yml` updated with your workspace `host` and `cluster_id` (the
+  committed values are placeholders).
+- Databricks CLI installed and authenticated for that workspace.
 - The local CLI has been built:
   `node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute build`
 - Run commands from the repository root so the local built CLI can be used.

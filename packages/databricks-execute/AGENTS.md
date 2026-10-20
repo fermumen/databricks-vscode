@@ -18,14 +18,19 @@ This folder is a standalone Yarn workspace package that builds the `databricks-e
 - Unit tests: `node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute test:unit`
 - Integration tests (real workspace/cluster, opt-in): `DATABRICKS_EXECUTE_INTEG=1 DATABRICKS_EXECUTE_CLUSTER_ID=<cluster-id> [DATABRICKS_EXECUTE_INTEG_START_CLUSTER=1] node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute test:integ`
 
-### Integration test example (current dev setup)
+### Integration test example
 
 ```bash
-DATABRICKS_EXECUTE_INTEG=1 \
-  DATABRICKS_EXECUTE_CLUSTER_ID=0702-165645-5f7ehvtu \
-  DATABRICKS_HOST=https://adb-4430213680693954.14.azuredatabricks.net \
+DATABRICKS_CONFIG_PROFILE=<profile> \
+  DATABRICKS_HOST=<workspace-host> \
+  DATABRICKS_EXECUTE_INTEG=1 \
+  DATABRICKS_EXECUTE_CLUSTER_ID=<cluster-id> \
   node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute test:integ
 ```
+
+- Set `DATABRICKS_HOST` explicitly when using a named profile: the test resolves the host via `databricks auth env`, which ignores `DATABRICKS_CONFIG_PROFILE` and falls back to `DEFAULT`.
+- The cluster must allow jobs workloads (notebook and `--widget` runs go through the Jobs API).
+- Don't commit workspace hosts or cluster IDs; this repo is public.
 
 ## Merging upstream changes
 

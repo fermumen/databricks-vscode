@@ -5,7 +5,8 @@
     dev:
       mode: development
       default: true
-      cluster_id: 0702-165645-5f7ehvtu
+      # Replace with your own cluster and workspace before running the examples.
+      cluster_id: 0123-456789-abcde123
       workspace:
-        host: https://adb-4430213680693954.14.azuredatabricks.net
-        root_path: /Workspace/Users/fernandomendez@tfl.gov.uk/.bundle/exec-example
+        host: https://adb-123.azuredatabricks.net
+        root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/exec-example
