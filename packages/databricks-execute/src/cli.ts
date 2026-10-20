@@ -14,7 +14,12 @@ import {
 } from "@databricks/sdk-experimental";
 
 import bootstrapTemplate from "../../databricks-vscode/resources/python/bootstrap.py";
-import {parseErrorResult} from "../../databricks-vscode/src/run/ErrorParser";
+import {
+    Frame,
+    parseErrorResult,
+    renderErrorEnvelope,
+    STDOUT_ERROR_BOUNDARY,
+} from "../../databricks-vscode/src/run/ErrorParser";
 import {
     Cluster,
     ExecutionContext,
@@ -32,6 +37,7 @@ import {
     normalizeHost,
     normalizeWorkspacePath,
     remoteWorkspacePathToLocalPath,
+    splitStdoutErrorEnvelope,
     workspacePrefixedPath,
     isLikelyClusterId,
 } from "./core";
@@ -866,6 +872,7 @@ async function main() {
             remoteRepoRoot,
             argv: [remotePythonFile, ...scriptArgs],
             envVars: options.env,
+            stdoutErrorBoundary: STDOUT_ERROR_BOUNDARY,
             persistContextState: shouldKeepExecutionContext,
         });
 
@@ -883,29 +890,51 @@ async function main() {
         const result = response.result;
         const results = result.results!;
 
+        // Remap a traceback frame's remote file to its local path and print it.
+        const printTracebackFrame = (frame: Frame) => {
+            try {
+                if (frame.file) {
+                    const mapped = remoteWorkspacePathToLocalPath(
+                        frame.file,
+                        bundleRoot,
+                        remoteRootPath
+                    );
+                    if (mapped) {
+                        frame.text = frame.text.replace(frame.file, mapped);
+                    }
+                }
+            } catch {}
+
+            // eslint-disable-next-line no-console
+            console.log(frame.text);
+        };
+
         let exitCode = 0;
         if (results.resultType === "text") {
-            // eslint-disable-next-line no-console
-            process.stdout.write(String((results as any).data ?? ""));
-            exitCode = 0;
+            // bootstrap.py reports a failure as text when the script printed
+            // before raising: captured stdout, the boundary, then a structured
+            // traceback (the 1.2 API drops stdout on native error results).
+            const {stdout, errorPayload} = splitStdoutErrorEnvelope(
+                String((results as any).data ?? ""),
+                STDOUT_ERROR_BOUNDARY
+            );
+            process.stdout.write(stdout);
+            // The API strips the trailing newline; restore it so the output
+            // doesn't run into the next status line.
+            if (stdout.length > 0 && !stdout.endsWith("\n")) {
+                process.stdout.write("\n");
+            }
+            if (errorPayload === undefined) {
+                exitCode = 0;
+            } else {
+                for (const frame of renderErrorEnvelope(errorPayload)) {
+                    printTracebackFrame(frame);
+                }
+                exitCode = 1;
+            }
         } else if (results.resultType === "error") {
-            const frames = parseErrorResult(results);
-            for (const frame of frames) {
-                try {
-                    if (frame.file) {
-                        const mapped = remoteWorkspacePathToLocalPath(
-                            frame.file,
-                            bundleRoot,
-                            remoteRootPath
-                        );
-                        if (mapped) {
-                            frame.text = frame.text.replace(frame.file, mapped);
-                        }
-                    }
-                } catch {}
-
-                // eslint-disable-next-line no-console
-                console.log(frame.text);
+            for (const frame of parseErrorResult(results)) {
+                printTracebackFrame(frame);
             }
             exitCode = 1;
         } else {

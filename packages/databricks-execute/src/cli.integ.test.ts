@@ -146,6 +146,12 @@ test(
         );
 
         await fs.writeFile(
+            path.join(tmp, "failing.py"),
+            'print("before failure")\nraise ValueError("boom")\n',
+            "utf8"
+        );
+
+        await fs.writeFile(
             path.join(tmp, "repl_init.py"),
             "counter = 41\nprint(counter)\n",
             "utf8"
@@ -237,6 +243,33 @@ test(
             plainRun.stdout,
             /hello from plain/u,
             `expected 'hello from plain' in stdout:\n${plainRun.stdout}`
+        );
+
+        const failingRun = run(process.execPath, [
+            cliPath,
+            path.join(tmp, "failing.py"),
+            "--target",
+            "dev",
+            ...maybeStartCluster,
+        ]);
+        assert.equal(
+            failingRun.code,
+            1,
+            `expected failing python run to exit 1:\n${failingRun.stdout}\n${failingRun.stderr}`
+        );
+        assert.match(
+            failingRun.stdout,
+            /before failure/u,
+            `expected output printed before the failure in stdout:\n${failingRun.stdout}`
+        );
+        assert.match(
+            failingRun.stdout,
+            /ValueError: boom/u,
+            `expected traceback summary in stdout:\n${failingRun.stdout}`
+        );
+        assert.ok(
+            failingRun.stdout.includes(path.join(tmp, "failing.py")),
+            `expected traceback mapped to the local file in stdout:\n${failingRun.stdout}`
         );
 
         const replInitRun = run(process.execPath, [

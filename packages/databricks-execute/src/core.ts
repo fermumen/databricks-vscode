@@ -129,6 +129,7 @@ export function compileBootstrapCommand(
         remoteRepoRoot: string;
         argv: string[];
         envVars: Record<string, string>;
+        stdoutErrorBoundary: string;
         persistContextState?: boolean;
     }
 ): string {
@@ -149,27 +150,55 @@ export function compileBootstrapCommand(
         "env = {}",
         `env = ${JSON.stringify(opts.envVars)}`
     );
+    bootstrap = bootstrap.replace(
+        '"STDOUT_ERROR_BOUNDARY"',
+        `"${opts.stdoutErrorBoundary}"`
+    );
 
     if (opts.persistContextState) {
+        // The run call sits inside bootstrap's stdout-capturing try block, so
+        // the replacement must keep its indentation.
         bootstrap = bootstrap.replace(
-            'runpy.run_path(python_file, run_name="__main__", init_globals=user_ns)',
-            [
-                '_globals = globals().get("_databricks_execute_globals")',
-                "if _globals is None:",
-                "    _globals = {}",
-                '    globals()["_databricks_execute_globals"] = _globals',
-                "_globals.update(user_ns)",
-                '_globals["__name__"] = "__main__"',
-                '_globals["__file__"] = python_file',
-                '_globals["__package__"] = None',
-                '_globals["__cached__"] = None',
-                'with open(python_file, "rb") as f:',
-                '    exec(compile(f.read(), python_file, "exec"), _globals, _globals)',
-            ].join("\n")
+            /^([ \t]*)runpy\.run_path\(python_file, run_name="__main__", init_globals=user_ns\)$/mu,
+            (_match, indent: string) =>
+                [
+                    '_globals = globals().get("_databricks_execute_globals")',
+                    "if _globals is None:",
+                    "    _globals = {}",
+                    '    globals()["_databricks_execute_globals"] = _globals',
+                    "_globals.update(user_ns)",
+                    '_globals["__name__"] = "__main__"',
+                    '_globals["__file__"] = python_file',
+                    '_globals["__package__"] = None',
+                    '_globals["__cached__"] = None',
+                    'with open(python_file, "rb") as f:',
+                    '    exec(compile(f.read(), python_file, "exec"), _globals, _globals)',
+                ]
+                    .map((line) => indent + line)
+                    .join("\n")
         );
     }
 
     return bootstrap;
+}
+
+/**
+ * Split a text command result into the script's stdout and, when bootstrap.py
+ * reports a failure after the script printed output, the structured error
+ * payload that follows the boundary.
+ */
+export function splitStdoutErrorEnvelope(
+    data: string,
+    boundary: string
+): {stdout: string; errorPayload?: string} {
+    const index = data.indexOf(boundary);
+    if (index === -1) {
+        return {stdout: data};
+    }
+    return {
+        stdout: data.slice(0, index),
+        errorPayload: data.slice(index + boundary.length),
+    };
 }
 
 export function isLikelyClusterId(value: string): boolean {

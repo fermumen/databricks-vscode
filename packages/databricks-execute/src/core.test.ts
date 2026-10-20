@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import {spawnSync} from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import test from "node:test";
 
 import {
@@ -15,8 +19,11 @@ import {
     normalizeWorkspacePath,
     parseKeyValueOption,
     remoteWorkspacePathToLocalPath,
+    splitStdoutErrorEnvelope,
     workspacePrefixedPath,
 } from "./core";
+
+const BOUNDARY = "__TEST_STDOUT_ERROR_BOUNDARY__";
 
 test("createProgressReporter reports changes immediately and unchanged heartbeats", () => {
     const reports: string[] = [];
@@ -152,6 +159,7 @@ test("compileBootstrapCommand injects argv and env", () => {
         argv: ["/Workspace/Users/me/project/a.py", "x", "y"],
         // eslint-disable-next-line @typescript-eslint/naming-convention
         envVars: {HELLO: "world"},
+        stdoutErrorBoundary: BOUNDARY,
     });
     assert.match(out, /python_file = "\/Workspace\/Users\/me\/project\/a\.py"/);
     assert.match(out, /repo_path = "\/Workspace\/Users\/me\/project"/);
@@ -176,6 +184,7 @@ test("compileBootstrapCommand can persist globals for reused contexts", () => {
         remoteRepoRoot: "/Workspace/Users/me/project",
         argv: ["/Workspace/Users/me/project/a.py"],
         envVars: {},
+        stdoutErrorBoundary: BOUNDARY,
         persistContextState: true,
     });
 
@@ -189,6 +198,102 @@ test("compileBootstrapCommand can persist globals for reused contexts", () => {
         /runpy\.run_path\(python_file, run_name="__main__", init_globals=user_ns\)/u
     );
 });
+
+test("splitStdoutErrorEnvelope separates stdout from the error payload", () => {
+    assert.deepEqual(splitStdoutErrorEnvelope("hello\n", BOUNDARY), {
+        stdout: "hello\n",
+    });
+    assert.deepEqual(
+        splitStdoutErrorEnvelope(
+            `hello\n\n${BOUNDARY}\n{"type":"E"}`,
+            BOUNDARY
+        ),
+        {stdout: "hello\n\n", errorPayload: '\n{"type":"E"}'}
+    );
+});
+
+const bootstrapPath = path.resolve(
+    __dirname,
+    "../../databricks-vscode/resources/python/bootstrap.py"
+);
+const hasPython =
+    spawnSync("python3", ["--version"], {stdio: "ignore"}).status === 0;
+
+// Runs the upstream bootstrap.py locally with stub Databricks globals.
+function runBootstrap(script: string, persistContextState: boolean) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dbexec-bootstrap-"));
+    try {
+        const pythonFile = path.join(dir, "script.py");
+        fs.writeFileSync(pythonFile, script);
+        const command = compileBootstrapCommand(
+            fs.readFileSync(bootstrapPath, "utf8"),
+            {
+                remotePythonFile: pythonFile,
+                remoteRepoRoot: dir,
+                argv: [pythonFile],
+                envVars: {},
+                stdoutErrorBoundary: BOUNDARY,
+                persistContextState,
+            }
+        );
+        const stubs =
+            "display = displayHTML = dbutils = table = sql = udf = None\n" +
+            "getArgument = sc = spark = sqlContext = None\n";
+        const runner = path.join(dir, "run_bootstrap.py");
+        fs.writeFileSync(runner, stubs + command);
+        return spawnSync("python3", [runner], {encoding: "utf8"});
+    } finally {
+        fs.rmSync(dir, {recursive: true, force: true});
+    }
+}
+
+for (const persistContextState of [false, true]) {
+    const mode = persistContextState ? "reused context" : "fresh context";
+
+    test(
+        `bootstrap.py reports stdout and traceback on failure (${mode})`,
+        {
+            skip: !hasPython && "python3 not available",
+        },
+        () => {
+            const result = runBootstrap(
+                'print("before failure")\nraise ValueError("boom")\n',
+                persistContextState
+            );
+            assert.equal(result.status, 0, result.stderr);
+
+            const {stdout, errorPayload} = splitStdoutErrorEnvelope(
+                result.stdout,
+                BOUNDARY
+            );
+            assert.equal(stdout.trim(), "before failure");
+            const envelope = JSON.parse(errorPayload!);
+            assert.equal(envelope.type, "ValueError");
+            assert.equal(envelope.message, "boom");
+            assert.equal(envelope.frames.at(-1).line, 2);
+        }
+    );
+
+    test(
+        `bootstrap.py prints stdout on success (${mode})`,
+        {
+            skip: !hasPython && "python3 not available",
+        },
+        () => {
+            const result = runBootstrap(
+                'print("all good")\n',
+                persistContextState
+            );
+            assert.equal(result.status, 0, result.stderr);
+            assert.deepEqual(
+                splitStdoutErrorEnvelope(result.stdout, BOUNDARY),
+                {
+                    stdout: "all good\n",
+                }
+            );
+        }
+    );
+}
 
 test("isLikelyClusterId matches common cluster id format", () => {
     assert.equal(isLikelyClusterId("0123-456789-abcde123"), true);

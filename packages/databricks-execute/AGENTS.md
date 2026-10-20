@@ -66,7 +66,8 @@ git commit
 
 - **`yarn.lock`** — always conflicts; resolve with `git checkout --theirs` then `yarn install`.
 - **SDK changes** — `cli.ts` imports from `@databricks/sdk-experimental` and from `packages/databricks-vscode/src/sdk-extensions`. If upstream changes those APIs (exports, method signatures), update `cli.ts` and, if needed, bump the public npm dependency in `packages/databricks-execute/package.json` followed by a root `node .yarn/releases/yarn-3.2.1.cjs install`.
-- **`bootstrap.py` / `ErrorParser.ts`** — also imported by `cli.ts`. Check if upstream modified them.
+- **`bootstrap.py` / `ErrorParser.ts`** — also imported by `cli.ts`. Check if upstream modified them. Compare with upstream's `compileCommandString` and result handling in `packages/databricks-vscode/src/run/DatabricksRuntime.ts`: every placeholder it substitutes must also be substituted in `compileBootstrapCommand` (`src/core.ts`), and `persistContextState` rewrites the `runpy.run_path(...)` line, so watch for changes around it. The `bootstrap.py` tests in `src/core.test.ts` run the real template with `python3`.
+- **`bin` metadata** — `yarn install` may rewrite `"bin"` in `packages/databricks-execute/package.json` to a string; restore the `{"databricks-execute": "dist/cli.js"}` object form before committing.
 - **Quick check**: `git log upstream/main --since="<last-merge-date>" -- packages/databricks-vscode/src/sdk-extensions packages/databricks-vscode/src/run/ErrorParser.ts packages/databricks-vscode/resources/python/bootstrap.py` to see if our imported files changed.
 
 ## Design choices / constraints
