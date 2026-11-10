@@ -44,16 +44,6 @@ export function normalizeHost(host: string): string {
     return host;
 }
 
-export function ensureValidEnvVars(envVars: Record<string, string>) {
-    for (const key of Object.keys(envVars)) {
-        if (!/^[a-zA-Z_]{1,}[a-zA-Z0-9_]*$/u.test(key)) {
-            throw new Error(
-                `Invalid environment variable ${key}: Only letters, digits and '_' are allowed.`
-            );
-        }
-    }
-}
-
 export function parseKeyValueOption(
     raw: string,
     flagName: string
@@ -67,10 +57,6 @@ export function parseKeyValueOption(
         key: raw.slice(0, eq),
         value: raw.slice(eq + 1),
     };
-}
-
-export function escapePythonString(str: string): string {
-    return str.replace(/\\/gu, "\\\\").replace(/'/gu, "\\'");
 }
 
 export function normalizeWorkspacePath(p: string): string {
@@ -122,83 +108,180 @@ export function remoteWorkspacePathToLocalPath(
     return path.join(localRoot, ...rel.split("/"));
 }
 
-export function compileBootstrapCommand(
-    bootstrapTemplate: string,
-    opts: {
-        remotePythonFile: string;
-        remoteRepoRoot: string;
-        argv: string[];
-        envVars: Record<string, string>;
-        stdoutErrorBoundary: string;
-        persistContextState?: boolean;
-    }
-): string {
-    ensureValidEnvVars(opts.envVars);
+// eslint-disable-next-line no-control-regex
+const ANSI_PATTERN = /\u001b\[[0-9;]*[A-Za-z]/gu;
 
-    let bootstrap = bootstrapTemplate;
+export function stripAnsi(text: string): string {
+    return text.replace(ANSI_PATTERN, "");
+}
 
-    bootstrap = bootstrap.replace(
-        '"PYTHON_FILE"',
-        `"${opts.remotePythonFile}"`
-    );
-    bootstrap = bootstrap.replace('"REPO_PATH"', `"${opts.remoteRepoRoot}"`);
-    bootstrap = bootstrap.replace(
-        "args = []",
-        `args = ['${opts.argv.map(escapePythonString).join("', '")}'];`
-    );
-    bootstrap = bootstrap.replace(
-        "env = {}",
-        `env = ${JSON.stringify(opts.envVars)}`
-    );
-    bootstrap = bootstrap.replace(
-        '"STDOUT_ERROR_BOUNDARY"',
-        `"${opts.stdoutErrorBoundary}"`
-    );
-
-    if (opts.persistContextState) {
-        // The run call sits inside bootstrap's stdout-capturing try block, so
-        // the replacement must keep its indentation.
-        bootstrap = bootstrap.replace(
-            /^([ \t]*)runpy\.run_path\(python_file, run_name="__main__", init_globals=user_ns\)$/mu,
-            (_match, indent: string) =>
-                [
-                    '_globals = globals().get("_databricks_execute_globals")',
-                    "if _globals is None:",
-                    "    _globals = {}",
-                    '    globals()["_databricks_execute_globals"] = _globals',
-                    "_globals.update(user_ns)",
-                    '_globals["__name__"] = "__main__"',
-                    '_globals["__file__"] = python_file',
-                    '_globals["__package__"] = None',
-                    '_globals["__cached__"] = None',
-                    'with open(python_file, "rb") as f:',
-                    '    exec(compile(f.read(), python_file, "exec"), _globals, _globals)',
-                ]
-                    .map((line) => indent + line)
-                    .join("\n")
-        );
-    }
-
-    return bootstrap;
+export function withTrailingNewline(text: string): string {
+    return text.endsWith("\n") ? text : `${text}\n`;
 }
 
 /**
- * Split a text command result into the script's stdout and, when bootstrap.py
- * reports a failure after the script printed output, the structured error
- * payload that follows the boundary.
+ * Remote path of the workflow wrapper uploaded next to a plain `.py` file.
+ * Mirrors `getWrapperPath` in upstream's `WorkspaceFsWorkflowWrapper.ts`.
  */
-export function splitStdoutErrorEnvelope(
-    data: string,
-    boundary: string
-): {stdout: string; errorPayload?: string} {
-    const index = data.indexOf(boundary);
-    if (index === -1) {
-        return {stdout: data};
+export function workflowWrapperPath(remoteFilePath: string): string {
+    const posixPath = path.posix;
+    const base = posixPath.basename(remoteFilePath);
+    return posixPath.format({
+        dir: posixPath.dirname(remoteFilePath),
+        name: base
+            .split(".")
+            .slice(0, -1)
+            .concat(["databricks", "file", "workflow-wrapper"])
+            .join("."),
+        ext: posixPath.extname(remoteFilePath),
+    });
+}
+
+/**
+ * Fill in upstream's `file.workflow-wrapper.py` placeholders. Mirrors
+ * `WorkspaceFsWorkflowWrapper.createFile`; both paths are /Workspace-prefixed.
+ */
+export function renderWorkflowWrapper(
+    template: string,
+    opts: {sourceFile: string; projectRoot: string}
+): string {
+    return template
+        .split("{{DATABRICKS_SOURCE_FILE}}")
+        .join(opts.sourceFile)
+        .split("{{DATABRICKS_PROJECT_ROOT}}")
+        .join(opts.projectRoot);
+}
+
+function escapeRegExp(text: string): string {
+    return text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+/**
+ * Rewrite remote bundle paths (with or without the /Workspace prefix) in a
+ * traceback to the matching local paths. Generated workflow wrappers have no
+ * local counterpart and are left as-is.
+ */
+export function remapRemotePaths(
+    text: string,
+    localRoot: string,
+    remoteRootPath: string
+): string {
+    const root = normalizeWorkspacePath(remoteRootPath).replace(/\/+$/u, "");
+    if (!root || root === "/") {
+        return text;
     }
-    return {
-        stdout: data.slice(0, index),
-        errorPayload: data.slice(index + boundary.length),
-    };
+    const pattern = new RegExp(
+        `(?:/Workspace)?${escapeRegExp(root)}/[^\\s"':,()]+`,
+        "gu"
+    );
+    return text.replace(pattern, (remote) => {
+        if (remote.includes(".databricks.file.workflow-wrapper.")) {
+            return remote;
+        }
+        return (
+            remoteWorkspacePathToLocalPath(remote, localRoot, root) ?? remote
+        );
+    });
+}
+
+/**
+ * Best-effort `{type, message}` for a Python error, from the API's HTML
+ * summary (e.g. `<span class='ansi-red-fg'>ValueError</span>: boom`) or
+ * the last `Type: message` line of the traceback.
+ */
+export function summarizePythonError(
+    summary: string | undefined,
+    traceback: string | undefined
+): {type: string; message: string} {
+    const candidates = [
+        htmlToPlainText(stripAnsi(summary ?? "")),
+        ...stripAnsi(traceback ?? "")
+            .split(/\r?\n/u)
+            .map((l) => l.trim())
+            .filter(Boolean)
+            .reverse(),
+    ];
+    for (const line of candidates) {
+        const match = line.match(/^([A-Za-z_][\w.]*):\s?(.*)$/u);
+        if (match && !line.startsWith("File ")) {
+            return {type: match[1], message: match[2]};
+        }
+    }
+    const fallback = candidates.find(Boolean) ?? "";
+    return {type: "Error", message: fallback};
+}
+
+/** JSON string literals are valid Python string literals. */
+function pythonString(value: string): string {
+    return JSON.stringify(value);
+}
+
+/**
+ * Snippet run once when a session is created: makes bundle modules
+ * importable and starts in the bundle's remote root.
+ */
+export function sessionSetupCommand(remoteRoot: string): string {
+    return [
+        "def _databricks_execute_setup(root):",
+        "    import os, sys",
+        "    if root not in sys.path:",
+        "        sys.path.insert(0, root)",
+        "    os.chdir(root)",
+        `_databricks_execute_setup(${pythonString(remoteRoot)})`,
+        "del _databricks_execute_setup",
+    ].join("\n");
+}
+
+/**
+ * Snippet run after `exec --sync`: drops cached bundle modules so the next
+ * import picks up the synced files.
+ */
+export function moduleUnloadCommand(remoteRoot: string): string {
+    return [
+        "def _databricks_execute_unload(root):",
+        "    import importlib, sys",
+        '    prefix = root.rstrip("/") + "/"',
+        "    for name, module in list(sys.modules.items()):",
+        '        if (getattr(module, "__file__", None) or "").startswith(prefix):',
+        "            del sys.modules[name]",
+        "    importlib.invalidate_caches()",
+        `_databricks_execute_unload(${pythonString(remoteRoot)})`,
+        "del _databricks_execute_unload",
+    ].join("\n");
+}
+
+/** Render a Command Execution API `table` result as tab-separated text. */
+export function formatTableResult(
+    data: unknown,
+    schema: Array<Record<string, any>> | undefined
+): string {
+    const cell = (v: unknown) =>
+        v === null || v === undefined
+            ? "null"
+            : typeof v === "object"
+              ? JSON.stringify(v)
+              : String(v);
+    const lines: string[] = [];
+    if (schema?.length) {
+        lines.push(schema.map((c) => String(c.name ?? "")).join("\t"));
+    }
+    for (const row of Array.isArray(data) ? data : []) {
+        lines.push((Array.isArray(row) ? row : [row]).map(cell).join("\t"));
+    }
+    return lines.join("\n");
+}
+
+export function isValidSessionName(name: string): boolean {
+    return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/u.test(name);
+}
+
+export function parseTimeoutSeconds(raw: string): number {
+    if (!/^\d+$/u.test(raw) || Number(raw) <= 0) {
+        throw new Error(
+            `Invalid --timeout value '${raw}' (expected a positive number of seconds).`
+        );
+    }
+    return Number(raw);
 }
 
 export function isLikelyClusterId(value: string): boolean {

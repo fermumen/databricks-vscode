@@ -9,10 +9,15 @@ async function main() {
 
     await esbuild.build({
         entryPoints: [
-            path.join(projectRoot, "src", "core.ts"),
-            path.join(projectRoot, "src", "core.test.ts"),
-            path.join(projectRoot, "src", "init.test.ts"),
-        ],
+            "core",
+            "core.test",
+            "init.test",
+            "output",
+            "args",
+            "args.test",
+            "sessionCache",
+            "sessionCache.test",
+        ].map((name) => path.join(projectRoot, "src", `${name}.ts`)),
         outdir,
         bundle: false,
         platform: "node",
@@ -23,7 +28,12 @@ async function main() {
 
     const result = spawnSync(
         process.execPath,
-        ["--test", path.join(outdir, "core.test.js"), path.join(outdir, "init.test.js")],
+        [
+            "--test",
+            ...["core", "init", "args", "sessionCache"].map((name) =>
+                path.join(outdir, `${name}.test.js`)
+            ),
+        ],
         {stdio: "inherit", cwd: projectRoot}
     );
     process.exitCode = result.status ?? 1;

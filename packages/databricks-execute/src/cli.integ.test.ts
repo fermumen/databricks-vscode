@@ -9,11 +9,12 @@ import test from "node:test";
 function run(
     command: string,
     args: string[],
-    opts?: {cwd?: string; env?: Record<string, string>}
+    opts?: {cwd?: string; env?: Record<string, string>; input?: string}
 ): {code: number; stdout: string; stderr: string} {
     const result = spawnSync(command, args, {
         cwd: opts?.cwd,
         env: opts?.env ? {...process.env, ...opts.env} : process.env,
+        input: opts?.input,
         encoding: "utf8",
     });
     return {
@@ -57,13 +58,23 @@ function getCurrentUserName(): string | undefined {
     }
 }
 
+function parseJson(res: {stdout: string; stderr: string}): any {
+    try {
+        return JSON.parse(res.stdout);
+    } catch {
+        throw new Error(
+            `expected one JSON object on stdout:\n${res.stdout}\n${res.stderr}`
+        );
+    }
+}
+
 test(
-    "databricks-execute notebook mode prints expression results",
+    "databricks-execute runs files as jobs and snippets in sessions",
     {
-        timeout: 30 * 60 * 1000,
+        timeout: 45 * 60 * 1000,
         skip: process.env.DATABRICKS_EXECUTE_INTEG !== "1",
     },
-    async () => {
+    async (t) => {
         const clusterId = process.env.DATABRICKS_EXECUTE_CLUSTER_ID;
         if (!clusterId) {
             throw new Error(
@@ -141,7 +152,7 @@ test(
 
         await fs.writeFile(
             path.join(tmp, "plain.py"),
-            'print("hello from plain")\n',
+            'import sys\nprint("hello from plain", sys.argv[1:])\n',
             "utf8"
         );
 
@@ -152,14 +163,20 @@ test(
         );
 
         await fs.writeFile(
-            path.join(tmp, "repl_init.py"),
-            "counter = 41\nprint(counter)\n",
+            path.join(tmp, "globals_check.py"),
+            "print(type(spark).__name__, type(dbutils).__name__, spark.range(3).count())\n",
             "utf8"
         );
 
         await fs.writeFile(
-            path.join(tmp, "repl_next.py"),
-            "counter += 1\nprint(counter)\n",
+            path.join(tmp, "slow.py"),
+            "import time\ntime.sleep(900)\n",
+            "utf8"
+        );
+
+        await fs.writeFile(
+            path.join(tmp, "helper_mod.py"),
+            "VALUE = 1\n",
             "utf8"
         );
 
@@ -186,137 +203,277 @@ test(
             process.env.DATABRICKS_EXECUTE_INTEG_START_CLUSTER === "1"
                 ? ["--start-cluster"]
                 : [];
+        // Keep the session name cache away from the user's real one.
+        const sessionTmp = await fs.mkdtemp(
+            path.join(os.tmpdir(), "databricks-execute-integ-sessions-")
+        );
+        const cli = (args: string[], input?: string) =>
+            run(process.execPath, [cliPath, ...args], {
+                cwd: tmp,
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                env: {TMPDIR: sessionTmp},
+                input,
+            });
+        const common = ["--target", "dev"];
 
-        const notebookRun = run(process.execPath, [
-            cliPath,
-            path.join(tmp, "expr.ipynb"),
-            "--target",
-            "dev",
-            ...maybeStartCluster,
-        ]);
-        assert.equal(
-            notebookRun.code,
-            0,
-            `notebook run failed:\n${notebookRun.stdout}\n${notebookRun.stderr}`
-        );
-        assert.match(
-            notebookRun.stdout,
-            /(^|\n)2(\n|$)/u,
-            `expected expression output '2' in stdout:\n${notebookRun.stdout}`
-        );
+        await t.test("notebook run prints expression results", () => {
+            const res = cli([
+                path.join(tmp, "expr.ipynb"),
+                ...common,
+                ...maybeStartCluster,
+            ]);
+            assert.equal(res.code, 0, `${res.stdout}\n${res.stderr}`);
+            assert.match(res.stdout, /(^|\n)2(\n|$)/u, res.stdout);
+        });
 
-        const widgetRun = run(process.execPath, [
-            cliPath,
-            path.join(tmp, "widgets.py"),
-            "--target",
-            "dev",
-            "--widget",
-            "greeting=hello",
-            "--widget",
-            "subject=widgets",
-            ...maybeStartCluster,
-        ]);
-        assert.equal(
-            widgetRun.code,
-            0,
-            `widget notebook run failed:\n${widgetRun.stdout}\n${widgetRun.stderr}`
-        );
-        assert.match(
-            widgetRun.stdout,
-            /\{"greeting": "hello", "subject": "widgets"\}/u,
-            `expected widget output in stdout:\n${widgetRun.stdout}`
-        );
+        await t.test("notebook run passes widgets", () => {
+            const res = cli([
+                "run",
+                path.join(tmp, "widgets.py"),
+                ...common,
+                "--widget",
+                "greeting=hello",
+                "--widget",
+                "subject=widgets",
+                ...maybeStartCluster,
+            ]);
+            assert.equal(res.code, 0, `${res.stdout}\n${res.stderr}`);
+            assert.match(
+                res.stdout,
+                /\{"greeting": "hello", "subject": "widgets"\}/u,
+                res.stdout
+            );
+        });
 
-        const plainRun = run(process.execPath, [
-            cliPath,
-            path.join(tmp, "plain.py"),
-            "--target",
-            "dev",
-            ...maybeStartCluster,
-        ]);
-        assert.equal(
-            plainRun.code,
-            0,
-            `plain python run failed:\n${plainRun.stdout}\n${plainRun.stderr}`
-        );
-        assert.match(
-            plainRun.stdout,
-            /hello from plain/u,
-            `expected 'hello from plain' in stdout:\n${plainRun.stdout}`
-        );
+        await t.test("plain .py runs as a job with script args", () => {
+            const res = cli([
+                "run",
+                path.join(tmp, "plain.py"),
+                ...common,
+                "--json",
+                ...maybeStartCluster,
+                "--",
+                "a",
+                "b",
+            ]);
+            const json = parseJson(res);
+            assert.equal(res.code, 0, `${res.stdout}\n${res.stderr}`);
+            assert.equal(json.status, "ok");
+            assert.equal(json.resultState, "SUCCESS");
+            assert.ok(json.runId, "expected a runId");
+            assert.match(json.stdout, /hello from plain \['a', 'b'\]/u);
+        });
 
-        const failingRun = run(process.execPath, [
-            cliPath,
-            path.join(tmp, "failing.py"),
-            "--target",
-            "dev",
-            ...maybeStartCluster,
-        ]);
-        assert.equal(
-            failingRun.code,
-            1,
-            `expected failing python run to exit 1:\n${failingRun.stdout}\n${failingRun.stderr}`
-        );
-        assert.match(
-            failingRun.stdout,
-            /before failure/u,
-            `expected output printed before the failure in stdout:\n${failingRun.stdout}`
-        );
-        assert.match(
-            failingRun.stdout,
-            /ValueError: boom/u,
-            `expected traceback summary in stdout:\n${failingRun.stdout}`
-        );
-        assert.ok(
-            failingRun.stdout.includes(path.join(tmp, "failing.py")),
-            `expected traceback mapped to the local file in stdout:\n${failingRun.stdout}`
-        );
+        await t.test("failing .py exits 1 with the traceback on stderr", () => {
+            const res = cli([
+                path.join(tmp, "failing.py"),
+                ...common,
+                ...maybeStartCluster,
+            ]);
+            assert.equal(res.code, 1, `${res.stdout}\n${res.stderr}`);
+            assert.match(res.stdout, /before failure/u, res.stdout);
+            assert.match(res.stderr, /ValueError/u, res.stderr);
+            assert.match(res.stderr, /boom/u, res.stderr);
+            t.diagnostic(
+                `failing.py traceback mapped to local path: ${res.stderr.includes(
+                    path.join(tmp, "failing.py")
+                )}`
+            );
+        });
 
-        const replInitRun = run(process.execPath, [
-            cliPath,
-            path.join(tmp, "repl_init.py"),
-            "--target",
-            "dev",
-            "--keep-context",
-            ...maybeStartCluster,
-        ]);
-        assert.equal(
-            replInitRun.code,
-            0,
-            `repl init run failed:\n${replInitRun.stdout}\n${replInitRun.stderr}`
-        );
-        assert.match(
-            replInitRun.stdout,
-            /(^|\n)41(\n|$)/u,
-            `expected '41' in stdout:\n${replInitRun.stdout}`
-        );
+        // Spike 4: spark/dbutils through upstream's file.workflow-wrapper.py.
+        await t.test("spark and dbutils resolve in a .py job", () => {
+            const res = cli([
+                path.join(tmp, "globals_check.py"),
+                ...common,
+                ...maybeStartCluster,
+            ]);
+            assert.equal(res.code, 0, `${res.stdout}\n${res.stderr}`);
+            assert.match(res.stdout, /SparkSession \S+ 3/u, res.stdout);
+        });
 
-        const contextIdMatch = replInitRun.stdout.match(
-            /Execution context ID: (\S+)/u
-        );
-        assert.ok(
-            contextIdMatch,
-            `expected execution context id in stdout:\n${replInitRun.stdout}`
-        );
+        await t.test("--timeout cancels the run and exits 124", () => {
+            const res = cli([
+                path.join(tmp, "slow.py"),
+                ...common,
+                "--timeout",
+                "60",
+                "--json",
+                ...maybeStartCluster,
+            ]);
+            assert.equal(res.code, 124, `${res.stdout}\n${res.stderr}`);
+            assert.equal(parseJson(res).status, "timeout");
+        });
 
-        const replNextRun = run(process.execPath, [
-            cliPath,
-            path.join(tmp, "repl_next.py"),
-            "--target",
-            "dev",
-            "--context-id",
-            contextIdMatch[1],
-            ...maybeStartCluster,
-        ]);
-        assert.equal(
-            replNextRun.code,
-            0,
-            `repl follow-up run failed:\n${replNextRun.stdout}\n${replNextRun.stderr}`
-        );
-        assert.match(
-            replNextRun.stdout,
-            /(^|\n)42(\n|$)/u,
-            `expected '42' in stdout:\n${replNextRun.stdout}`
-        );
+        await t.test("sessions keep state between snippets", () => {
+            // Spike 1: create latency and exec round-trip.
+            let started = Date.now();
+            const create = cli([
+                "session",
+                "create",
+                ...common,
+                "--json",
+                ...maybeStartCluster,
+            ]);
+            assert.equal(create.code, 0, `${create.stdout}\n${create.stderr}`);
+            assert.equal(parseJson(create).status, "created");
+            t.diagnostic(`session create took ${Date.now() - started}ms`);
+
+            const again = cli(["session", "create", ...common, "--json"]);
+            assert.equal(again.code, 0, `${again.stdout}\n${again.stderr}`);
+            assert.equal(parseJson(again).status, "existing");
+
+            started = Date.now();
+            const first = cli([
+                "session",
+                "exec",
+                ...common,
+                "-c",
+                "counter = 41\nprint(counter)",
+            ]);
+            assert.equal(first.code, 0, `${first.stdout}\n${first.stderr}`);
+            assert.match(first.stdout, /(^|\n)41(\n|$)/u, first.stdout);
+            t.diagnostic(`trivial session exec took ${Date.now() - started}ms`);
+
+            // Spike 2: a bare last expression comes back as a text result.
+            const second = cli(
+                ["session", "exec", ...common, "--json", "-"],
+                "counter += 1\ncounter\n"
+            );
+            const secondJson = parseJson(second);
+            assert.equal(second.code, 0, `${second.stdout}\n${second.stderr}`);
+            assert.match(secondJson.stdout, /42/u, second.stdout);
+
+            const imported = cli([
+                "session",
+                "exec",
+                ...common,
+                "-c",
+                "import helper_mod\nprint(helper_mod.VALUE)",
+            ]);
+            assert.equal(
+                imported.code,
+                0,
+                `${imported.stdout}\n${imported.stderr}`
+            );
+            assert.match(imported.stdout, /(^|\n)1(\n|$)/u, imported.stdout);
+        });
+
+        await t.test("exec --sync reloads edited bundle modules", async () => {
+            await fs.writeFile(
+                path.join(tmp, "helper_mod.py"),
+                "VALUE = 22\n",
+                "utf8"
+            );
+            const res = cli([
+                "session",
+                "exec",
+                ...common,
+                "--sync",
+                "-c",
+                "import helper_mod\nprint(helper_mod.VALUE)",
+            ]);
+            assert.equal(res.code, 0, `${res.stdout}\n${res.stderr}`);
+            assert.match(res.stdout, /(^|\n)22(\n|$)/u, res.stdout);
+        });
+
+        await t.test("a snippet that raises exits 1", () => {
+            const res = cli([
+                "session",
+                "exec",
+                ...common,
+                "--json",
+                "-c",
+                'raise ValueError("boom")',
+            ]);
+            const json = parseJson(res);
+            assert.equal(res.code, 1, `${res.stdout}\n${res.stderr}`);
+            assert.equal(json.status, "error");
+            assert.equal(json.error?.type, "ValueError");
+            assert.match(json.error?.message ?? "", /boom/u);
+        });
+
+        // Spike 3: magics in a 1.2 context. Recorded, not asserted.
+        await t.test("spike: %sql and %pip in a session", () => {
+            for (const code of ["%sql SELECT 1 AS one", "%pip --version"]) {
+                const res = cli([
+                    "session",
+                    "exec",
+                    ...common,
+                    "--json",
+                    "-c",
+                    code,
+                ]);
+                t.diagnostic(
+                    `${code} -> exit ${res.code}: ${res.stdout.slice(0, 500)}`
+                );
+            }
+        });
+
+        await t.test("status, list and stop", () => {
+            const status = cli(["session", "status", ...common]);
+            assert.equal(status.code, 0, `${status.stdout}\n${status.stderr}`);
+            assert.match(status.stdout, /running/u, status.stdout);
+
+            const list = cli(["session", "list", ...common, "--json"]);
+            assert.equal(list.code, 0, `${list.stdout}\n${list.stderr}`);
+            assert.deepEqual(
+                parseJson(list).sessions.map((s: any) => s.session),
+                ["default"]
+            );
+
+            const stop = cli(["session", "stop", ...common]);
+            assert.equal(stop.code, 0, `${stop.stdout}\n${stop.stderr}`);
+
+            const after = cli(["session", "exec", ...common, "-c", "1"]);
+            assert.equal(after.code, 3, `${after.stdout}\n${after.stderr}`);
+        });
+
+        // Spike 5: what the API returns for a context id that no longer
+        // exists. The CLI must report it as lost (exit 3) and prune it.
+        await t.test("a stale context id is reported as lost", async () => {
+            const cacheFile = path.join(
+                sessionTmp,
+                "databricks-execute",
+                "sessions.json"
+            );
+            const hostKey = (
+                /^https?:\/\//iu.test(host) ? host : `https://${host}`
+            )
+                .replace(/\/+$/u, "")
+                .toLowerCase();
+            await fs.mkdir(path.dirname(cacheFile), {recursive: true});
+            await fs.writeFile(
+                cacheFile,
+                JSON.stringify({
+                    version: 1,
+                    sessions: {
+                        [`${hostKey} ${clusterId} ${rootPath}/files stale`]: {
+                            host: hostKey,
+                            clusterId,
+                            bundleRoot: `${rootPath}/files`,
+                            name: "stale",
+                            contextId: "1234567890123456789",
+                            createdAt: new Date().toISOString(),
+                        },
+                    },
+                }),
+                "utf8"
+            );
+            const res = cli([
+                "session",
+                "exec",
+                ...common,
+                "-s",
+                "stale",
+                "-c",
+                "1",
+            ]);
+            t.diagnostic(`stale context -> exit ${res.code}: ${res.stderr}`);
+            assert.equal(res.code, 3, `${res.stdout}\n${res.stderr}`);
+            assert.match(res.stderr, /was lost/u, res.stderr);
+            const status = cli(["session", "status", ...common, "-s", "stale"]);
+            assert.equal(status.code, 3, `${status.stdout}\n${status.stderr}`);
+        });
     }
 );

@@ -29,7 +29,8 @@ DATABRICKS_CONFIG_PROFILE=<profile> \
 ```
 
 - Set `DATABRICKS_HOST` explicitly when using a named profile: the test resolves the host via `databricks auth env`, which ignores `DATABRICKS_CONFIG_PROFILE` and falls back to `DEFAULT`.
-- The cluster must allow jobs workloads (notebook and `--widget` runs go through the Jobs API).
+- The cluster must allow jobs workloads (every `run` goes through the Jobs API) and interactive workloads (sessions use the Command Execution API).
+- The test isolates the session name cache with its own `TMPDIR`. Lines starting with `#` in its output (`t.diagnostic`) record the v3 spike findings: session latencies, `%sql`/`%pip` behaviour, stale-context handling.
 - Don't commit workspace hosts or cluster IDs; this repo is public.
 
 ## Merging upstream changes
@@ -61,7 +62,7 @@ node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute build
 node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute test
 
 # 5. Smoke test against exec-example/
-node packages/databricks-execute/dist/cli.js exec-example/widget_params_example.py --target dev --widget greeting=hello --widget name=smoke
+node packages/databricks-execute/dist/cli.js run exec-example/widget_params_example.py --target dev --widget greeting=hello --widget name=smoke
 
 # 6. Complete the merge
 git commit
@@ -70,16 +71,20 @@ git commit
 ### What to watch for
 
 - **`yarn.lock`** — always conflicts; resolve with `git checkout --theirs` then `yarn install`.
-- **SDK changes** — `cli.ts` imports from `@databricks/sdk-experimental` and from `packages/databricks-vscode/src/sdk-extensions`. If upstream changes those APIs (exports, method signatures), update `cli.ts` and, if needed, bump the public npm dependency in `packages/databricks-execute/package.json` followed by a root `node .yarn/releases/yarn-3.2.1.cjs install`.
-- **`bootstrap.py` / `ErrorParser.ts`** — also imported by `cli.ts`. Check if upstream modified them. Compare with upstream's `compileCommandString` and result handling in `packages/databricks-vscode/src/run/DatabricksRuntime.ts`: every placeholder it substitutes must also be substituted in `compileBootstrapCommand` (`src/core.ts`), and `persistContextState` rewrites the `runpy.run_path(...)` line, so watch for changes around it. The `bootstrap.py` tests in `src/core.test.ts` run the real template with `python3`.
+- **SDK changes** — `src/run.ts`, `src/session.ts` and `src/bundle.ts` import from `@databricks/sdk-experimental` and from `packages/databricks-vscode/src/sdk-extensions` (`WorkflowRun`, `Cluster`, `ExecutionContext`, `WorkspaceFsEntity`). If upstream changes those APIs (exports, method signatures), update our callers and, if needed, bump the public npm dependency in `packages/databricks-execute/package.json` followed by a root `node .yarn/releases/yarn-3.2.1.cjs install`.
+- **`file.workflow-wrapper.py` / `WorkspaceFsWorkflowWrapper.ts`** — `src/run.ts` uploads upstream's `resources/python/file.workflow-wrapper.py` next to a plain `.py` file, mirroring `WorkspaceFsWorkflowWrapper.createFile` and `getWrapperPath` (copied into `src/core.ts` as `workflowWrapperPath` / `renderWorkflowWrapper`, because that class imports `vscode`). On every merge, check whether upstream changed the wrapper's placeholders, the wrapper file name, or `createFile`. The wrapper tests in `src/core.test.ts` run the real template with `python3`.
+- **`ErrorParser.ts`** — `parseErrorResult` formats session tracebacks. Check for changes to its frame format.
 - **`bin` metadata** — `yarn install` may rewrite `"bin"` in `packages/databricks-execute/package.json` to a string; restore the `{"databricks-execute": "dist/cli.js"}` object form before committing.
-- **Quick check**: `git log upstream/main --since="<last-merge-date>" -- packages/databricks-vscode/src/sdk-extensions packages/databricks-vscode/src/run/ErrorParser.ts packages/databricks-vscode/resources/python/bootstrap.py` to see if our imported files changed.
+- **Quick check**: `git log upstream/main --since="<last-merge-date>" -- packages/databricks-vscode/src/sdk-extensions packages/databricks-vscode/src/run/ErrorParser.ts packages/databricks-vscode/src/workspace-fs/WorkspaceFsWorkflowWrapper.ts packages/databricks-vscode/resources/python/file.workflow-wrapper.py` to see if our imported or mirrored files changed.
 
 ## Design choices / constraints
 
 - Configuration comes from `databricks.yml` (resolved via `databricks bundle validate`); CLI flags and env vars override bundle values. Use `databricks-execute init` to scaffold or update a `databricks.yml` with a `dbexec` target.
 - Auth is always resolved via the Databricks CLI auth chain (`databricks auth env`). No tokens are stored in config files.
-- Execution mirrors the VS Code extension behavior: `bundle sync` then run via the Command Execution API using the same `bootstrap.py` and error parsing.
-- Core pure helpers live in `src/core.ts`; add tests in `src/core.test.ts` using Node’s built-in `node:test` runner.
+- `run` mirrors the VS Code extension's "Run File as Workflow": `bundle sync`, then a one-off Jobs run (notebook task, or Python file task through upstream's workflow wrapper).
+- `session` keeps a named Command Execution context alive on a classic cluster and sends snippets as-is (no bootstrap). Session names live in `$TMPDIR/databricks-execute/sessions.json` and are always checked with the API before use; a lost session exits 3 and is never re-created silently.
+- Output contract: status lines on stderr, program output on stdout, tracebacks on stderr; `--json` prints one result object. Exit codes are defined in `src/output.ts`.
+- Domain terms (Bundle, Run, Session, Snippet, Lost session) are defined in `CONTEXT.md`.
+- Core pure helpers live in `src/core.ts`; add tests next to the module (`src/*.test.ts`) using Node’s built-in `node:test` runner, and list new test entry points in `scripts/test.js`.
 - Node version: tests use `node:test` (Node 18+).
 - Uses `@databricks/sdk-experimental` (public npm package), bundled into `dist/cli.js` at build time by esbuild. Keep runtime externals from `scripts/build.js` in `dependencies`; build/test-only packages belong in `devDependencies`.
