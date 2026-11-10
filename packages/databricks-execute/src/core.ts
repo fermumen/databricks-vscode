@@ -201,6 +201,118 @@ export function splitStdoutErrorEnvelope(
     };
 }
 
+// eslint-disable-next-line no-control-regex
+const ANSI_PATTERN = /\u001b\[[0-9;]*[A-Za-z]/gu;
+
+export function stripAnsi(text: string): string {
+    return text.replace(ANSI_PATTERN, "");
+}
+
+export function withTrailingNewline(text: string): string {
+    return text.endsWith("\n") ? text : `${text}\n`;
+}
+
+/**
+ * Remote path of the workflow wrapper uploaded next to a plain `.py` file.
+ * Mirrors `getWrapperPath` in upstream's `WorkspaceFsWorkflowWrapper.ts`.
+ */
+export function workflowWrapperPath(remoteFilePath: string): string {
+    const posixPath = path.posix;
+    const base = posixPath.basename(remoteFilePath);
+    return posixPath.format({
+        dir: posixPath.dirname(remoteFilePath),
+        name: base
+            .split(".")
+            .slice(0, -1)
+            .concat(["databricks", "file", "workflow-wrapper"])
+            .join("."),
+        ext: posixPath.extname(remoteFilePath),
+    });
+}
+
+/**
+ * Fill in upstream's `file.workflow-wrapper.py` placeholders. Mirrors
+ * `WorkspaceFsWorkflowWrapper.createFile`; both paths are /Workspace-prefixed.
+ */
+export function renderWorkflowWrapper(
+    template: string,
+    opts: {sourceFile: string; projectRoot: string}
+): string {
+    return template
+        .split("{{DATABRICKS_SOURCE_FILE}}")
+        .join(opts.sourceFile)
+        .split("{{DATABRICKS_PROJECT_ROOT}}")
+        .join(opts.projectRoot);
+}
+
+function escapeRegExp(text: string): string {
+    return text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+/**
+ * Rewrite remote bundle paths (with or without the /Workspace prefix) in a
+ * traceback to the matching local paths. Generated workflow wrappers have no
+ * local counterpart and are left as-is.
+ */
+export function remapRemotePaths(
+    text: string,
+    localRoot: string,
+    remoteRootPath: string
+): string {
+    const root = normalizeWorkspacePath(remoteRootPath).replace(/\/+$/u, "");
+    if (!root || root === "/") {
+        return text;
+    }
+    const pattern = new RegExp(
+        `(?:/Workspace)?${escapeRegExp(root)}/[^\\s"':,()]+`,
+        "gu"
+    );
+    return text.replace(pattern, (remote) => {
+        if (remote.includes(".databricks.file.workflow-wrapper.")) {
+            return remote;
+        }
+        return (
+            remoteWorkspacePathToLocalPath(remote, localRoot, root) ?? remote
+        );
+    });
+}
+
+/**
+ * Best-effort `{type, message}` for a Python error, from the API's HTML
+ * summary (e.g. `<span class='ansi-red-fg'>ValueError</span>: boom`) or
+ * the last `Type: message` line of the traceback.
+ */
+export function summarizePythonError(
+    summary: string | undefined,
+    traceback: string | undefined
+): {type: string; message: string} {
+    const candidates = [
+        htmlToPlainText(stripAnsi(summary ?? "")),
+        ...stripAnsi(traceback ?? "")
+            .split(/\r?\n/u)
+            .map((l) => l.trim())
+            .filter(Boolean)
+            .reverse(),
+    ];
+    for (const line of candidates) {
+        const match = line.match(/^([A-Za-z_][\w.]*):\s?(.*)$/u);
+        if (match && !line.startsWith("File ")) {
+            return {type: match[1], message: match[2]};
+        }
+    }
+    const fallback = candidates.find(Boolean) ?? "";
+    return {type: "Error", message: fallback};
+}
+
+export function parseTimeoutSeconds(raw: string): number {
+    if (!/^\d+$/u.test(raw) || Number(raw) <= 0) {
+        throw new Error(
+            `Invalid --timeout value '${raw}' (expected a positive number of seconds).`
+        );
+    }
+    return Number(raw);
+}
+
 export function isLikelyClusterId(value: string): boolean {
     // Common format: 0123-456789-abcde123
     return /^\d{4}-\d{6}-[a-zA-Z0-9]+$/u.test(value);
