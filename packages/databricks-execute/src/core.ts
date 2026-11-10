@@ -44,16 +44,6 @@ export function normalizeHost(host: string): string {
     return host;
 }
 
-export function ensureValidEnvVars(envVars: Record<string, string>) {
-    for (const key of Object.keys(envVars)) {
-        if (!/^[a-zA-Z_]{1,}[a-zA-Z0-9_]*$/u.test(key)) {
-            throw new Error(
-                `Invalid environment variable ${key}: Only letters, digits and '_' are allowed.`
-            );
-        }
-    }
-}
-
 export function parseKeyValueOption(
     raw: string,
     flagName: string
@@ -67,10 +57,6 @@ export function parseKeyValueOption(
         key: raw.slice(0, eq),
         value: raw.slice(eq + 1),
     };
-}
-
-export function escapePythonString(str: string): string {
-    return str.replace(/\\/gu, "\\\\").replace(/'/gu, "\\'");
 }
 
 export function normalizeWorkspacePath(p: string): string {
@@ -120,85 +106,6 @@ export function remoteWorkspacePathToLocalPath(
     }
 
     return path.join(localRoot, ...rel.split("/"));
-}
-
-export function compileBootstrapCommand(
-    bootstrapTemplate: string,
-    opts: {
-        remotePythonFile: string;
-        remoteRepoRoot: string;
-        argv: string[];
-        envVars: Record<string, string>;
-        stdoutErrorBoundary: string;
-        persistContextState?: boolean;
-    }
-): string {
-    ensureValidEnvVars(opts.envVars);
-
-    let bootstrap = bootstrapTemplate;
-
-    bootstrap = bootstrap.replace(
-        '"PYTHON_FILE"',
-        `"${opts.remotePythonFile}"`
-    );
-    bootstrap = bootstrap.replace('"REPO_PATH"', `"${opts.remoteRepoRoot}"`);
-    bootstrap = bootstrap.replace(
-        "args = []",
-        `args = ['${opts.argv.map(escapePythonString).join("', '")}'];`
-    );
-    bootstrap = bootstrap.replace(
-        "env = {}",
-        `env = ${JSON.stringify(opts.envVars)}`
-    );
-    bootstrap = bootstrap.replace(
-        '"STDOUT_ERROR_BOUNDARY"',
-        `"${opts.stdoutErrorBoundary}"`
-    );
-
-    if (opts.persistContextState) {
-        // The run call sits inside bootstrap's stdout-capturing try block, so
-        // the replacement must keep its indentation.
-        bootstrap = bootstrap.replace(
-            /^([ \t]*)runpy\.run_path\(python_file, run_name="__main__", init_globals=user_ns\)$/mu,
-            (_match, indent: string) =>
-                [
-                    '_globals = globals().get("_databricks_execute_globals")',
-                    "if _globals is None:",
-                    "    _globals = {}",
-                    '    globals()["_databricks_execute_globals"] = _globals',
-                    "_globals.update(user_ns)",
-                    '_globals["__name__"] = "__main__"',
-                    '_globals["__file__"] = python_file',
-                    '_globals["__package__"] = None',
-                    '_globals["__cached__"] = None',
-                    'with open(python_file, "rb") as f:',
-                    '    exec(compile(f.read(), python_file, "exec"), _globals, _globals)',
-                ]
-                    .map((line) => indent + line)
-                    .join("\n")
-        );
-    }
-
-    return bootstrap;
-}
-
-/**
- * Split a text command result into the script's stdout and, when bootstrap.py
- * reports a failure after the script printed output, the structured error
- * payload that follows the boundary.
- */
-export function splitStdoutErrorEnvelope(
-    data: string,
-    boundary: string
-): {stdout: string; errorPayload?: string} {
-    const index = data.indexOf(boundary);
-    if (index === -1) {
-        return {stdout: data};
-    }
-    return {
-        stdout: data.slice(0, index),
-        errorPayload: data.slice(index + boundary.length),
-    };
 }
 
 // eslint-disable-next-line no-control-regex

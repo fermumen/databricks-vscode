@@ -7,23 +7,42 @@ import test from "node:test";
 
 import {
     coalesce,
-    compileBootstrapCommand,
     createProgressReporter,
     detectNotebookType,
-    ensureValidEnvVars,
     extractNotebookTextOutputFromExportedHtml,
+    formatTableResult,
     htmlToPlainText,
     isLikelyClusterId,
+    isValidSessionName,
     localPathToRemoteWorkspacePath,
+    moduleUnloadCommand,
     normalizeHost,
     normalizeWorkspacePath,
     parseKeyValueOption,
+    parseTimeoutSeconds,
+    remapRemotePaths,
     remoteWorkspacePathToLocalPath,
-    splitStdoutErrorEnvelope,
+    renderWorkflowWrapper,
+    sessionSetupCommand,
+    stripAnsi,
+    summarizePythonError,
+    workflowWrapperPath,
     workspacePrefixedPath,
 } from "./core";
 
-const BOUNDARY = "__TEST_STDOUT_ERROR_BOUNDARY__";
+const hasPython =
+    spawnSync("python3", ["--version"], {stdio: "ignore"}).status === 0;
+
+function withTmpDir<T>(fn: (dir: string) => T): T {
+    const dir = fs.realpathSync(
+        fs.mkdtempSync(path.join(os.tmpdir(), "dbexec-core-"))
+    );
+    try {
+        return fn(dir);
+    } finally {
+        fs.rmSync(dir, {recursive: true, force: true});
+    }
+}
 
 test("createProgressReporter reports changes immediately and unchanged heartbeats", () => {
     const reports: string[] = [];
@@ -113,21 +132,6 @@ test("remoteWorkspacePathToLocalPath maps /Workspace paths to local paths", () =
     );
 });
 
-test("ensureValidEnvVars enforces shell-like KEY names", () => {
-    // eslint-disable-next-line @typescript-eslint/naming-convention
-    ensureValidEnvVars({FOO: "1", BAR_BAZ1: "2", _OK: "3"});
-    assert.throws(
-        // eslint-disable-next-line @typescript-eslint/naming-convention
-        () => ensureValidEnvVars({"1NO": "x"}),
-        /Invalid environment variable/
-    );
-    assert.throws(
-        // eslint-disable-next-line @typescript-eslint/naming-convention
-        () => ensureValidEnvVars({"BAD-NAME": "x"}),
-        /Invalid environment variable/
-    );
-});
-
 test("parseKeyValueOption splits KEY=VALUE pairs", () => {
     assert.deepEqual(parseKeyValueOption("name=databricks", "--widget"), {
         key: "name",
@@ -150,150 +154,6 @@ test("parseKeyValueOption splits KEY=VALUE pairs", () => {
         /Invalid --widget value/
     );
 });
-
-test("compileBootstrapCommand injects argv and env", () => {
-    const template = `python_file = "PYTHON_FILE"\nrepo_path = "REPO_PATH"\nargs = []\nenv = {}\n`;
-    const out = compileBootstrapCommand(template, {
-        remotePythonFile: "/Workspace/Users/me/project/a.py",
-        remoteRepoRoot: "/Workspace/Users/me/project",
-        argv: ["/Workspace/Users/me/project/a.py", "x", "y"],
-        // eslint-disable-next-line @typescript-eslint/naming-convention
-        envVars: {HELLO: "world"},
-        stdoutErrorBoundary: BOUNDARY,
-    });
-    assert.match(out, /python_file = "\/Workspace\/Users\/me\/project\/a\.py"/);
-    assert.match(out, /repo_path = "\/Workspace\/Users\/me\/project"/);
-    assert.match(
-        out,
-        /args = \['\/Workspace\/Users\/me\/project\/a\.py', 'x', 'y'\];/
-    );
-    assert.match(out, /env = \{"HELLO":"world"\}/);
-});
-
-test("compileBootstrapCommand can persist globals for reused contexts", () => {
-    const template = [
-        'python_file = "PYTHON_FILE"',
-        'repo_path = "REPO_PATH"',
-        "args = []",
-        "env = {}",
-        'runpy.run_path(python_file, run_name="__main__", init_globals=user_ns)',
-        "",
-    ].join("\n");
-    const out = compileBootstrapCommand(template, {
-        remotePythonFile: "/Workspace/Users/me/project/a.py",
-        remoteRepoRoot: "/Workspace/Users/me/project",
-        argv: ["/Workspace/Users/me/project/a.py"],
-        envVars: {},
-        stdoutErrorBoundary: BOUNDARY,
-        persistContextState: true,
-    });
-
-    assert.match(out, /_databricks_execute_globals/u);
-    assert.match(
-        out,
-        /exec\(compile\(f\.read\(\), python_file, "exec"\), _globals, _globals\)/u
-    );
-    assert.doesNotMatch(
-        out,
-        /runpy\.run_path\(python_file, run_name="__main__", init_globals=user_ns\)/u
-    );
-});
-
-test("splitStdoutErrorEnvelope separates stdout from the error payload", () => {
-    assert.deepEqual(splitStdoutErrorEnvelope("hello\n", BOUNDARY), {
-        stdout: "hello\n",
-    });
-    assert.deepEqual(
-        splitStdoutErrorEnvelope(
-            `hello\n\n${BOUNDARY}\n{"type":"E"}`,
-            BOUNDARY
-        ),
-        {stdout: "hello\n\n", errorPayload: '\n{"type":"E"}'}
-    );
-});
-
-const bootstrapPath = path.resolve(
-    __dirname,
-    "../../databricks-vscode/resources/python/bootstrap.py"
-);
-const hasPython =
-    spawnSync("python3", ["--version"], {stdio: "ignore"}).status === 0;
-
-// Runs the upstream bootstrap.py locally with stub Databricks globals.
-function runBootstrap(script: string, persistContextState: boolean) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dbexec-bootstrap-"));
-    try {
-        const pythonFile = path.join(dir, "script.py");
-        fs.writeFileSync(pythonFile, script);
-        const command = compileBootstrapCommand(
-            fs.readFileSync(bootstrapPath, "utf8"),
-            {
-                remotePythonFile: pythonFile,
-                remoteRepoRoot: dir,
-                argv: [pythonFile],
-                envVars: {},
-                stdoutErrorBoundary: BOUNDARY,
-                persistContextState,
-            }
-        );
-        const stubs =
-            "display = displayHTML = dbutils = table = sql = udf = None\n" +
-            "getArgument = sc = spark = sqlContext = None\n";
-        const runner = path.join(dir, "run_bootstrap.py");
-        fs.writeFileSync(runner, stubs + command);
-        return spawnSync("python3", [runner], {encoding: "utf8"});
-    } finally {
-        fs.rmSync(dir, {recursive: true, force: true});
-    }
-}
-
-for (const persistContextState of [false, true]) {
-    const mode = persistContextState ? "reused context" : "fresh context";
-
-    test(
-        `bootstrap.py reports stdout and traceback on failure (${mode})`,
-        {
-            skip: !hasPython && "python3 not available",
-        },
-        () => {
-            const result = runBootstrap(
-                'print("before failure")\nraise ValueError("boom")\n',
-                persistContextState
-            );
-            assert.equal(result.status, 0, result.stderr);
-
-            const {stdout, errorPayload} = splitStdoutErrorEnvelope(
-                result.stdout,
-                BOUNDARY
-            );
-            assert.equal(stdout.trim(), "before failure");
-            const envelope = JSON.parse(errorPayload!);
-            assert.equal(envelope.type, "ValueError");
-            assert.equal(envelope.message, "boom");
-            assert.equal(envelope.frames.at(-1).line, 2);
-        }
-    );
-
-    test(
-        `bootstrap.py prints stdout on success (${mode})`,
-        {
-            skip: !hasPython && "python3 not available",
-        },
-        () => {
-            const result = runBootstrap(
-                'print("all good")\n',
-                persistContextState
-            );
-            assert.equal(result.status, 0, result.stderr);
-            assert.deepEqual(
-                splitStdoutErrorEnvelope(result.stdout, BOUNDARY),
-                {
-                    stdout: "all good\n",
-                }
-            );
-        }
-    );
-}
 
 test("isLikelyClusterId matches common cluster id format", () => {
     assert.equal(isLikelyClusterId("0123-456789-abcde123"), true);
@@ -378,4 +238,193 @@ test("extractNotebookTextOutputFromExportedHtml includes mimeBundle text/plain r
     const out = extractNotebookTextOutputFromExportedHtml(html);
     assert.ok(out);
     assert.equal(out.stdout, "2");
+});
+
+test("workflowWrapperPath mirrors upstream's getWrapperPath", () => {
+    assert.equal(
+        workflowWrapperPath("/Users/me/p/src/job.py"),
+        "/Users/me/p/src/job.databricks.file.workflow-wrapper.py"
+    );
+    assert.equal(
+        workflowWrapperPath("/Users/me/p/a.b.py"),
+        "/Users/me/p/a.b.databricks.file.workflow-wrapper.py"
+    );
+});
+
+const wrapperTemplatePath = path.resolve(
+    __dirname,
+    "../../databricks-vscode/resources/python/file.workflow-wrapper.py"
+);
+
+test("renderWorkflowWrapper fills every placeholder in upstream's template", () => {
+    const out = renderWorkflowWrapper(
+        fs.readFileSync(wrapperTemplatePath, "utf8"),
+        {
+            sourceFile: "/Workspace/Users/me/p/src/job.py",
+            projectRoot: "/Workspace/Users/me/p",
+        }
+    );
+    assert.doesNotMatch(out, /\{\{DATABRICKS_/u);
+    assert.match(
+        out,
+        /python_file = '\/Workspace\/Users\/me\/p\/src\/job\.py'/u
+    );
+    assert.match(out, /project_root = '\/Workspace\/Users\/me\/p'/u);
+});
+
+test(
+    "rendered workflow wrapper runs the file with cwd and sys.path set",
+    {skip: !hasPython && "python3 not available"},
+    () =>
+        withTmpDir((dir) => {
+            fs.mkdirSync(path.join(dir, "src"));
+            const source = path.join(dir, "src", "job.py");
+            fs.writeFileSync(
+                source,
+                "import os, sys\nprint(__name__, os.getcwd(), sys.path[0], sys.argv[1:])\n"
+            );
+            const stubs =
+                "display = displayHTML = dbutils = table = sql = udf = None\n" +
+                "getArgument = sc = spark = sqlContext = None\n";
+            const wrapper = path.join(dir, "wrapper.py");
+            fs.writeFileSync(
+                wrapper,
+                stubs +
+                    renderWorkflowWrapper(
+                        fs.readFileSync(wrapperTemplatePath, "utf8"),
+                        {sourceFile: source, projectRoot: dir}
+                    )
+            );
+            const result = spawnSync("python3", [wrapper, "a", "b"], {
+                encoding: "utf8",
+            });
+            assert.equal(result.status, 0, result.stderr);
+            assert.equal(
+                result.stdout.trim(),
+                `__main__ ${path.join(dir, "src")} ${dir} ['a', 'b']`
+            );
+        })
+);
+
+test("remapRemotePaths maps bundle paths to local paths", () => {
+    const localRoot = path.join(path.sep, "home", "me", "proj");
+    const remoteRoot = "/Workspace/Users/me/.bundle/proj/dev/files";
+    const trace = [
+        'File "/Workspace/Users/me/.bundle/proj/dev/files/src/a.py", line 3, in <module>',
+        "File /Users/me/.bundle/proj/dev/files/src/b.py:4",
+        'File "/Workspace/Users/me/.bundle/proj/dev/files/src/a.databricks.file.workflow-wrapper.py", line 9',
+        'File "/databricks/python/lib/runpy.py", line 1',
+    ].join("\n");
+    const out = remapRemotePaths(trace, localRoot, remoteRoot).split("\n");
+    assert.equal(
+        out[0],
+        `File "${path.join(localRoot, "src", "a.py")}", line 3, in <module>`
+    );
+    assert.equal(out[1], `File ${path.join(localRoot, "src", "b.py")}:4`);
+    assert.equal(out[2], trace.split("\n")[2]);
+    assert.equal(out[3], trace.split("\n")[3]);
+});
+
+test("summarizePythonError prefers the API summary, then the traceback", () => {
+    assert.deepEqual(
+        summarizePythonError(
+            "<span class='ansi-red-fg'>ValueError</span>: boom",
+            undefined
+        ),
+        {type: "ValueError", message: "boom"}
+    );
+    assert.deepEqual(
+        summarizePythonError(
+            undefined,
+            "Traceback (most recent call last):\n  File \"/x.py\", line 1\n\u001b[0;31mKeyError\u001b[0m: 'k'\n"
+        ),
+        {type: "KeyError", message: "'k'"}
+    );
+    assert.deepEqual(summarizePythonError(undefined, "something odd"), {
+        type: "Error",
+        message: "something odd",
+    });
+});
+
+test("stripAnsi removes colour codes", () => {
+    assert.equal(stripAnsi("\u001b[0;31mred\u001b[0m plain"), "red plain");
+});
+
+test("formatTableResult renders a header and tab-separated rows", () => {
+    assert.equal(
+        formatTableResult(
+            [
+                [1, "a", null],
+                [2, "b", {x: 1}],
+            ],
+            [{name: "id"}, {name: "name"}, {name: "extra"}]
+        ),
+        'id\tname\textra\n1\ta\tnull\n2\tb\t{"x":1}'
+    );
+    assert.equal(formatTableResult(undefined, undefined), "");
+});
+
+test(
+    "session snippets add the bundle to sys.path and reload edited modules",
+    {skip: !hasPython && "python3 not available"},
+    () =>
+        withTmpDir((dir) => {
+            const root = path.join(dir, "bundle");
+            fs.mkdirSync(root);
+            fs.writeFileSync(path.join(root, "mod.py"), "VALUE = 1\n");
+            const script = path.join(dir, "session.py");
+            fs.writeFileSync(
+                script,
+                [
+                    "import json, os, sys",
+                    "ns = {}",
+                    "exec(sys.argv[1], ns)",
+                    "exec('import mod', ns)",
+                    "first = ns['mod'].VALUE",
+                    `open(os.path.join(${JSON.stringify(
+                        root
+                    )}, 'mod.py'), 'w').write('VALUE = 22\\n')`,
+                    "exec('import mod', ns)",
+                    "cached = ns['mod'].VALUE",
+                    "exec(sys.argv[2], ns)",
+                    "exec('import mod', ns)",
+                    "print(json.dumps({'first': first, 'cached': cached, 'reloaded': ns['mod'].VALUE,",
+                    "  'cwd': os.getcwd(), 'leftovers': sorted(k for k in ns if k.startswith('_databricks'))}))",
+                ].join("\n")
+            );
+            const result = spawnSync(
+                "python3",
+                [
+                    "-B",
+                    script,
+                    sessionSetupCommand(root),
+                    moduleUnloadCommand(root),
+                ],
+                {encoding: "utf8", cwd: dir}
+            );
+            assert.equal(result.status, 0, result.stderr);
+            assert.deepEqual(JSON.parse(result.stdout), {
+                first: 1,
+                cached: 1,
+                reloaded: 22,
+                cwd: root,
+                leftovers: [],
+            });
+        })
+);
+
+test("parseTimeoutSeconds accepts positive whole seconds", () => {
+    assert.equal(parseTimeoutSeconds("90"), 90);
+    assert.throws(() => parseTimeoutSeconds("0"), /Invalid --timeout/u);
+    assert.throws(() => parseTimeoutSeconds("1.5"), /Invalid --timeout/u);
+    assert.throws(() => parseTimeoutSeconds("10m"), /Invalid --timeout/u);
+});
+
+test("isValidSessionName allows short identifier-like names", () => {
+    assert.equal(isValidSessionName("default"), true);
+    assert.equal(isValidSessionName("etl-2.run_1"), true);
+    assert.equal(isValidSessionName(""), false);
+    assert.equal(isValidSessionName("-x"), false);
+    assert.equal(isValidSessionName("a b"), false);
+    assert.equal(isValidSessionName("x".repeat(65)), false);
 });
