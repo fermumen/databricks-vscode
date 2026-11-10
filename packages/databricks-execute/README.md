@@ -1,12 +1,11 @@
 # `databricks-execute`
 
-Runs a local Python file on a Databricks cluster, mimicking the Databricks VS Code extension “Upload and Run File” flow:
+Runs local bundle code on Databricks, in one of two modes:
 
-1. `databricks bundle sync` (uploads bundle assets)
-2. Executes the file on the configured cluster via the Command Execution API
-3. Parses remote stack traces and rewrites `/Workspace/...` paths back to local paths
+-   **`run`**: syncs the bundle with `databricks bundle sync`, then runs one file as a one-off Jobs run. Notebooks (`.ipynb` or "Databricks notebook source" files) run as notebook tasks. Plain `.py` files run as Python file tasks through the same workflow wrapper the VS Code extension uses for "Run File as Workflow".
+-   **`session`**: a named, long-lived Python execution context on a classic cluster. You send it code snippets, REPL-style, and variables persist between calls.
 
-For notebooks (`.ipynb` or “Databricks notebook source” files like `example.py`), it runs them as a workflow (Jobs API notebook task) to match the VS Code “Run File as Workflow” behavior.
+A job run takes about 20 seconds at minimum. A session `exec` only pays a command round-trip, so use sessions for quick checks and `run` for real work.
 
 ## Install / build (repo-local)
 
@@ -50,7 +49,7 @@ npm install -g @fermumen/databricks-execute@latest
 Then run:
 
 ```bash
-databricks-execute path/to/local/file.py -- arg1 arg2
+databricks-execute run path/to/local/file.py -- arg1 arg2
 ```
 
 Upgrade to latest:
@@ -70,7 +69,7 @@ node .yarn/releases/yarn-3.2.1.cjs workspace @fermumen/databricks-execute add -D
 Then run it with:
 
 ```bash
-node .yarn/releases/yarn-3.2.1.cjs databricks-execute path/to/local/file.py -- arg1 arg2
+node .yarn/releases/yarn-3.2.1.cjs databricks-execute run path/to/local/file.py -- arg1 arg2
 ```
 
 ### Global
@@ -83,56 +82,94 @@ npm install -g ./packages/databricks-execute
 
 ## Usage
 
-```bash
-databricks-execute path/to/local/file.py -- arg1 arg2
-```
+This CLI shells out to the Databricks CLI (`databricks`), so make sure it's installed and on your `PATH`. Every command needs a bundle: a `databricks.yml` in the current directory or a parent (see [`init`](#quick-start-with-init)).
 
-This CLI shells out to the Databricks CLI (`databricks`), so make sure it’s installed and on your `PATH`.
-
-### Notebook mode
-
-If the input file is:
-
--   an `.ipynb`, or
--   a `*.py`/`*.sql`/`*.scala`/`*.r` file whose first line is `Databricks notebook source`
-
-then `databricks-execute` runs it as a **workflow notebook task** instead of using the Command Execution API.
-
-Example:
+### `run`: a file as a job
 
 ```bash
-databricks-execute path/to/notebook.py --target dev --widget greeting=hello --widget name=databricks
+databricks-execute run path/to/script.py --target dev -- arg1 arg2
+databricks-execute run path/to/notebook.ipynb --target dev --widget greeting=hello
+databricks-execute path/to/script.py --target dev   # `run` is the default command
 ```
 
-Notes:
+| File                                                                                     | Runs as                                                     | Parameters                        |
+| ---------------------------------------------------------------------------------------- | ----------------------------------------------------------- | --------------------------------- |
+| `.ipynb`, or `.py`/`.sql`/`.scala`/`.r` whose first line is `Databricks notebook source` | notebook task                                               | `--widget KEY=VALUE` (repeatable) |
+| plain `.py`                                                                              | Python file task, via upstream's `file.workflow-wrapper.py` | `-- arg1 arg2` (`sys.argv`)       |
+| anything else                                                                            | rejected                                                    |                                   |
 
--   Positional args (`-- arg1 arg2`) and `--env KEY=VALUE` are only supported in Command Execution mode (plain `.py` files).
--   `--keep-context` leaves a newly created Command Execution context alive and prints its id; pass that id back with `--context-id <id>` to reuse interpreter state across plain `.py` runs.
--   Repeat `--widget KEY=VALUE` to populate notebook widget / `base_parameters` values for notebook runs.
--   Notebook output is printed by extracting text stdout/stderr (and tracebacks) from the exported run. For rich outputs (tables/plots/HTML), open the run URL in a browser.
--   Long-running executions are supported. The CLI prints status changes immediately and an unchanged-state heartbeat at most once per minute while waiting.
--   In plain `.py` mode (Command Execution API), client-side wait timeout is set to 240 hours.
--   In notebook workflow mode (Jobs API), one-off run timeout is explicitly set to `0` (no timeout).
+-   Plain `.py` files run with the bundle root on `sys.path`, the file's directory as the working directory, and `spark`, `dbutils` and `display` available as globals.
+-   `--serverless` runs on serverless compute instead of a cluster.
+-   `--timeout <seconds>` cancels the run when time is up and exits 124. Without it, runs have no timeout.
+-   The run URL is printed as soon as the run starts. The CLI prints state changes immediately and an unchanged-state heartbeat at most once a minute.
+-   For Python files, the run's logs are printed, followed by the error and traceback if it failed. `/Workspace/...` paths in the traceback are rewritten to local paths. For notebooks, text output and tracebacks are taken from the exported run; open the run URL to see rich output such as tables and plots.
 
-All configuration is read from `databricks.yml` (via `databricks bundle validate`): `workspace.host`, workspace file path, and `cluster_id`.
-
-If the configured cluster is stopped, it is started automatically. Pass `--no-start-cluster` to disable this.
-
-### Reusing a Python execution context
-
-For REPL-like plain `.py` workflows, create and keep a context alive:
+### `session`: snippets in a live context
 
 ```bash
-databricks-execute path/to/snippet.py --target dev --keep-context
+databricks-execute session create --target dev
+databricks-execute session exec -c 'df = spark.range(10)'
+databricks-execute session exec -c 'print(df.count())'   # prints 10
+cat snippet.py | databricks-execute session exec -        # read code from stdin
+databricks-execute session exec --sync -c 'import mymod; mymod.main()'
+databricks-execute session status
+databricks-execute session stop
+databricks-execute session list
 ```
 
-That prints an `Execution context ID: ...` line. Reuse it on later runs:
+-   `-s <name>` picks a session; the default name is `default`. A session is identified by the workspace host, the cluster and its name.
+-   `create` starts a stopped cluster (unless you pass `--no-start-cluster`), syncs the bundle, and creates the context with the bundle's remote root on `sys.path` and as the working directory. If the session already exists, `create` prints it and exits 0; `--force` replaces it.
+-   `exec` sends the snippet as-is. There is no file setup: no `sys.argv` or environment changes. Printed output comes back on stdout. `exec` never starts a cluster.
+-   `exec --sync` runs `bundle sync` first and unloads cached bundle modules, so edited modules are re-imported. Without `--sync`, nothing is synced.
+-   When a snippet raises, the 1.2 API returns only the traceback, so output printed before the error is lost. To keep it, print in smaller snippets or catch the exception.
+-   Sessions need a classic cluster: the Command Execution API doesn't run on serverless.
+-   Session names are cached in `$TMPDIR/databricks-execute/sessions.json`, and nothing is written into the bundle. Every command checks the context with the API first. If the cluster restarted or terminated, the session is reported as lost (exit 3) and removed from the cache. It is never re-created silently, because its state is gone; run `session create` again.
 
-```bash
-databricks-execute path/to/next-snippet.py --target dev --context-id <id>
+### Output and exit codes
+
+-   Status lines go to stderr. Program output goes to stdout and tracebacks to stderr. ANSI colours are stripped when stderr isn't a terminal.
+-   `--json` prints one result object on stdout (logs still go to stderr):
+
+```json
+{
+    "mode": "session",
+    "action": "exec",
+    "session": "default",
+    "clusterId": "...",
+    "contextId": "...",
+    "status": "error",
+    "exitCode": 1,
+    "stdout": "",
+    "error": {"type": "ValueError", "message": "boom", "traceback": "..."},
+    "truncated": false,
+    "durationMs": 1234
+}
 ```
 
-These flags are only supported for plain `.py` files, not notebooks.
+`run` results also include `runId`, `runUrl`, `resultState` and `stderr`.
+
+| Exit code | Meaning                                              |
+| --------- | ---------------------------------------------------- |
+| 0         | success                                              |
+| 1         | the run failed, the snippet raised, or another error |
+| 2         | usage error (bad arguments, unsupported file type)   |
+| 3         | the session wasn't found or was lost                 |
+| 124       | `run --timeout` reached                              |
+| 130       | cancelled with Ctrl+C                                |
+
+### Upgrading from 2.x
+
+| 2.x                                                    | 3.0                                                                                     |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| `databricks-execute script.py` (Command Execution API) | still works, but runs as a job (about 20s minimum); use `session exec` for quick checks |
+| `--keep-context` / `--context-id <id>`                 | `session create`, then `session exec -s <name>`                                         |
+| `--env KEY=VALUE`                                      | script args (`-- arg1 arg2`) or `--widget` for notebooks                                |
+| `.sql` / `.scala` files without the notebook header    | rejected; add the `Databricks notebook source` header                                   |
+| tracebacks on stdout                                   | tracebacks on stderr                                                                    |
+
+### Configuration
+
+All configuration is read from `databricks.yml` (via `databricks bundle validate`): `workspace.host`, the workspace file path, and `cluster_id`. The bundle target must use `mode: development`.
 
 ## Quick start with `init`
 

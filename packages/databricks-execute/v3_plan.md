@@ -142,6 +142,26 @@ databricks-execute session list
   as jobs (slower, ~20s; use `session exec` for quick checks).
 - `bootstrap.py` is no longer used by the CLI.
 
+## Status
+
+Implemented on this branch. Decisions taken while implementing:
+
+- The spike runs as part of `src/cli.integ.test.ts` instead of before the build.
+  Assertions cover what we depend on; latencies and `%sql`/`%pip` behaviour are
+  reported with `t.diagnostic`. Record the findings below after the first run.
+- Hard break in 3.0.0: removed flags fail with a pointer to the replacement.
+- `run --timeout <seconds>` added (cancels the run, exit 124).
+- Notebooks keep running unwrapped; `createNotebookWrapper` stays an open question.
+- Every `session` command needs a `databricks.yml`. `session create` also runs
+  `bundle sync` and sets the working directory to the bundle's remote root.
+- `session exec` takes code from `-c` or stdin (`-`) only, and exits 3 when the
+  session doesn't exist; it never auto-creates one.
+- Usage errors exit 2 in every mode, not only `session`.
+
+### Spike findings
+
+_Not recorded yet: run the integration tests against a real cluster._
+
 ## Spike first (real cluster)
 
 Measure and confirm before building the session layer:
@@ -180,4 +200,4 @@ Measure and confirm before building the session layer:
 - Should notebook runs also go through upstream's `createNotebookWrapper` (sets
   cwd/`sys.path`, hoists `%pip install`) to match VS Code? It changes notebook
   behavior, so decide separately from v3.
-- Does `run` need a `--timeout`? Jobs runs have no timeout today.
+- ~~Does `run` need a `--timeout`?~~ Added.
