@@ -95,6 +95,7 @@ function reportRunHandle(run: WorkflowRun, out: Output) {
 
 /** Print a failed run's error and trace, and describe it for `--json`. */
 function reportRunError(
+    // eslint-disable-next-line @typescript-eslint/naming-convention
     output: {error?: string; error_trace?: string},
     ws: BundleWorkspace,
     out: Output

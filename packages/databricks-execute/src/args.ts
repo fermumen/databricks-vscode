@@ -1,4 +1,8 @@
-import {parseKeyValueOption, parseTimeoutSeconds} from "./core";
+import {
+    isValidSessionName,
+    parseKeyValueOption,
+    parseTimeoutSeconds,
+} from "./core";
 import {UsageError} from "./output";
 
 export type CommonOptions = {
@@ -19,8 +23,28 @@ export type RunArgs = CommonOptions & {
     scriptArgs: string[];
 };
 
-export type ParsedArgs = {command: "help"} | RunArgs;
+export const SESSION_ACTIONS = [
+    "create",
+    "exec",
+    "status",
+    "stop",
+    "list",
+] as const;
+export type SessionAction = (typeof SESSION_ACTIONS)[number];
 
+export type SessionArgs = CommonOptions & {
+    command: "session";
+    action: SessionAction;
+    name: string;
+    force: boolean;
+    code?: string;
+    stdin: boolean;
+    sync: boolean;
+};
+
+export type ParsedArgs = {command: "help"} | RunArgs | SessionArgs;
+
+/* eslint-disable @typescript-eslint/naming-convention */
 const REMOVED_FLAGS: Record<string, string> = {
     "--keep-context":
         "--keep-context was removed in 3.0.0. Use 'databricks-execute session create' and 'session exec' to keep state between snippets.",
@@ -29,6 +53,7 @@ const REMOVED_FLAGS: Record<string, string> = {
     "--env":
         "--env was removed in 3.0.0. Pass values as script args (-- arg1 arg2) or, for notebooks, with --widget KEY=VALUE.",
 };
+/* eslint-enable @typescript-eslint/naming-convention */
 
 /** Walks the args, handing flags we don't own back to `handle`. */
 function walk(
@@ -144,34 +169,125 @@ function parseRun(argv: string[]): RunArgs {
     return args;
 }
 
+function parseSession(argv: string[]): SessionArgs {
+    const [action, ...rest] = argv;
+    if (!SESSION_ACTIONS.includes(action as SessionAction)) {
+        throw new UsageError(
+            `Unknown session action '${
+                action ?? ""
+            }'. Expected one of: ${SESSION_ACTIONS.join(", ")}.`
+        );
+    }
+    const args: SessionArgs = {
+        ...defaultCommon(),
+        command: "session",
+        action: action as SessionAction,
+        name: "default",
+        force: false,
+        stdin: false,
+        sync: false,
+    };
+    const only = (flag: string, allowed: SessionAction) => {
+        if (args.action !== allowed) {
+            throw new UsageError(
+                `${flag} is only supported by 'session ${allowed}'.`
+            );
+        }
+    };
+
+    walk(rest, args, (a, next) => {
+        switch (a) {
+            case "-s":
+            case "--session":
+                args.name = next();
+                return true;
+            case "--force":
+                only(a, "create");
+                args.force = true;
+                return true;
+            case "-c":
+            case "--code":
+                only(a, "exec");
+                args.code = next();
+                return true;
+            case "-":
+                only("'-' (read code from stdin)", "exec");
+                args.stdin = true;
+                return true;
+            case "--sync":
+                only(a, "exec");
+                args.sync = true;
+                return true;
+            case "--serverless":
+                throw new UsageError(
+                    "Sessions need a classic cluster: the Command Execution API doesn't run on serverless. Use 'run --serverless' instead."
+                );
+        }
+        return false;
+    });
+
+    if (!isValidSessionName(args.name)) {
+        throw new UsageError(
+            `Invalid session name '${args.name}' (letters, digits, '.', '_' and '-'; up to 64 characters).`
+        );
+    }
+    if (args.action === "exec") {
+        if (args.code !== undefined && args.stdin) {
+            throw new UsageError("Pass code with either -c or '-', not both.");
+        }
+        if (args.code === undefined && !args.stdin) {
+            throw new UsageError(
+                "Missing code: pass -c <code>, or '-' to read it from stdin."
+            );
+        }
+    }
+    return args;
+}
+
 export function parseCliArgs(argv: string[]): ParsedArgs {
+    const delimiterIndex = argv.indexOf("--");
+    const ownArgs =
+        delimiterIndex === -1 ? argv : argv.slice(0, delimiterIndex);
     if (
-        argv.length === 0 ||
-        argv[0] === "--help" ||
-        argv[0] === "-h" ||
-        argv[0] === "help"
+        ownArgs.length === 0 ||
+        ownArgs.includes("--help") ||
+        ownArgs.includes("-h") ||
+        ownArgs[0] === "help"
     ) {
         return {command: "help"};
     }
-    const [first, ...rest] = argv;
-    const isHelp = (a: string[]) => a.includes("--help") || a.includes("-h");
 
+    const [first, ...rest] = argv;
     if (first === "run") {
-        return isHelp(rest) ? {command: "help"} : parseRun(rest);
+        return parseRun(rest);
+    }
+    if (first === "session") {
+        return parseSession(rest);
     }
     // `databricks-execute <file> ...` is kept as an alias for `run`.
-    return isHelp(argv) ? {command: "help"} : parseRun(argv);
+    return parseRun(argv);
 }
 
 export const HELP_TEXT = [
     "Usage:",
     "  databricks-execute run <file> [options] [-- script args...]",
     "  databricks-execute <file> [options] [-- script args...]   (alias for run)",
+    "  databricks-execute session create [-s <name>] [--force] [options]",
+    "  databricks-execute session exec   [-s <name>] (-c <code> | -) [--sync] [options]",
+    "  databricks-execute session status [-s <name>] [options]",
+    "  databricks-execute session stop   [-s <name>] [options]",
+    "  databricks-execute session list   [options]",
     "  databricks-execute init [--host <url>] [--cluster <id>] [--target <name>]",
     "",
     "run: execute a file as a one-off Jobs run.",
     "  .ipynb and 'Databricks notebook source' files run as notebook tasks;",
     "  plain .py files run as Python file tasks. Other file types are rejected.",
+    "  Slower (~20s minimum) but isolated; use it for real work.",
+    "",
+    "session: a named, long-lived Python context on a classic cluster.",
+    "  'exec' sends a snippet as-is and keeps variables between calls; use it",
+    "  for quick checks. 'create' syncs the bundle and adds its remote root to",
+    "  sys.path. Sessions are lost when the cluster restarts.",
     "",
     "Options (all commands):",
     "  --target <name>        Bundle target (default: bundle default)",
@@ -188,6 +304,14 @@ export const HELP_TEXT = [
     "  --timeout <seconds>    Cancel the run after this many seconds (exit 124)",
     "  -- args...             Script arguments (plain .py only)",
     "",
+    "Options (session):",
+    "  -s, --session <name>   Session name (default: default)",
+    "  --force                create: replace an existing session",
+    "  -c, --code <code>      exec: code to run",
+    "  -                      exec: read code from stdin",
+    "  --sync                 exec: run 'bundle sync' and reload bundle modules first",
+    "",
     "Exit codes:",
-    "  0 success, 1 run failed or error, 2 usage error, 124 timeout, 130 cancelled",
+    "  0 success, 1 run failed / snippet raised / other error, 2 usage error,",
+    "  3 session not found or lost, 124 timeout, 130 cancelled",
 ].join("\n");

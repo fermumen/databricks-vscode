@@ -6,6 +6,7 @@ import {HELP_TEXT, ParsedArgs, parseCliArgs} from "./args";
 import {interruptDatabricksCli} from "./bundle";
 import {EXIT_CANCELLED, EXIT_OK, Output, exitCodeForError} from "./output";
 import {runCommand} from "./run";
+import {sessionCommand} from "./session";
 
 class SimpleCancellationTokenSource {
     private listeners: Array<(e?: any) => any> = [];
@@ -72,10 +73,22 @@ async function main() {
 
         const cts = new SimpleCancellationTokenSource();
         installSigintHandler(cts, out);
-        process.exitCode = await runCommand(parsed, cts, out);
+        process.exitCode =
+            parsed.command === "session"
+                ? await sessionCommand(parsed, cts, out)
+                : await runCommand(parsed, cts, out);
     } catch (e) {
         const exitCode = exitCodeForError(e);
-        out.error(e, {mode: parsed?.command ?? "run"}, exitCode);
+        const context: Record<string, unknown> =
+            parsed?.command === "session"
+                ? {
+                      mode: "session",
+                      action: parsed.action,
+                      session:
+                          parsed.action === "list" ? undefined : parsed.name,
+                  }
+                : {mode: "run"};
+        out.error(e, context, exitCode);
         process.exitCode = exitCode;
     }
 }

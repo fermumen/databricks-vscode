@@ -304,6 +304,70 @@ export function summarizePythonError(
     return {type: "Error", message: fallback};
 }
 
+/** JSON string literals are valid Python string literals. */
+function pythonString(value: string): string {
+    return JSON.stringify(value);
+}
+
+/**
+ * Snippet run once when a session is created: makes bundle modules
+ * importable and starts in the bundle's remote root.
+ */
+export function sessionSetupCommand(remoteRoot: string): string {
+    return [
+        "def _databricks_execute_setup(root):",
+        "    import os, sys",
+        "    if root not in sys.path:",
+        "        sys.path.insert(0, root)",
+        "    os.chdir(root)",
+        `_databricks_execute_setup(${pythonString(remoteRoot)})`,
+        "del _databricks_execute_setup",
+    ].join("\n");
+}
+
+/**
+ * Snippet run after `exec --sync`: drops cached bundle modules so the next
+ * import picks up the synced files.
+ */
+export function moduleUnloadCommand(remoteRoot: string): string {
+    return [
+        "def _databricks_execute_unload(root):",
+        "    import importlib, sys",
+        '    prefix = root.rstrip("/") + "/"',
+        "    for name, module in list(sys.modules.items()):",
+        '        if (getattr(module, "__file__", None) or "").startswith(prefix):',
+        "            del sys.modules[name]",
+        "    importlib.invalidate_caches()",
+        `_databricks_execute_unload(${pythonString(remoteRoot)})`,
+        "del _databricks_execute_unload",
+    ].join("\n");
+}
+
+/** Render a Command Execution API `table` result as tab-separated text. */
+export function formatTableResult(
+    data: unknown,
+    schema: Array<Record<string, any>> | undefined
+): string {
+    const cell = (v: unknown) =>
+        v === null || v === undefined
+            ? "null"
+            : typeof v === "object"
+              ? JSON.stringify(v)
+              : String(v);
+    const lines: string[] = [];
+    if (schema?.length) {
+        lines.push(schema.map((c) => String(c.name ?? "")).join("\t"));
+    }
+    for (const row of Array.isArray(data) ? data : []) {
+        lines.push((Array.isArray(row) ? row : [row]).map(cell).join("\t"));
+    }
+    return lines.join("\n");
+}
+
+export function isValidSessionName(name: string): boolean {
+    return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/u.test(name);
+}
+
 export function parseTimeoutSeconds(raw: string): number {
     if (!/^\d+$/u.test(raw) || Number(raw) <= 0) {
         throw new Error(
