@@ -157,6 +157,8 @@ Implemented on this branch. Decisions taken while implementing:
 - `session exec` takes code from `-c` or stdin (`-`) only, and exits 3 when the
   session doesn't exist; it never auto-creates one.
 - Usage errors exit 2 in every mode, not only `session`.
+- The session cache key also includes the bundle's remote root, so two bundles
+  on the same cluster never reuse each other's context (found in review).
 
 ### Spike findings
 

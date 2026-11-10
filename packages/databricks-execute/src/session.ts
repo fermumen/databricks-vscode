@@ -114,6 +114,11 @@ async function runInternal(
             )}`
         );
     }
+    if (result.status !== "Finished") {
+        throw new Error(
+            `${what} failed: command ${result.status ?? "Unknown"}.`
+        );
+    }
 }
 
 class SessionRunner {
@@ -132,7 +137,12 @@ class SessionRunner {
     }
 
     private key(clusterId: string): SessionKey {
-        return {host: this.ws.host, clusterId, name: this.name};
+        return {
+            host: this.ws.host,
+            clusterId,
+            bundleRoot: this.remoteRoot(),
+            name: this.name,
+        };
     }
 
     private remoteRoot() {
@@ -321,6 +331,20 @@ class SessionRunner {
             }
         }
 
+        // A terminal Error/Cancelled status can come back without an error
+        // result; never report it as success.
+        if (!error && result.status !== "Finished") {
+            const message = `Command ${result.status ?? "Unknown"}${
+                results?.cause ? `: ${stripAnsi(results.cause)}` : "."
+            }`;
+            this.out.programStderr(message);
+            error = {
+                type: `Command${result.status ?? "Unknown"}`,
+                message,
+                traceback: "",
+            };
+        }
+
         let exitCode: number;
         let status: string;
         if (this.cts.token.isCancellationRequested) {
@@ -410,7 +434,10 @@ class SessionRunner {
 
     async list(): Promise<number> {
         const live: Array<SessionEntry & {status: Liveness}> = [];
-        for (const entry of await this.cache.listForHost(this.ws.host)) {
+        for (const entry of await this.cache.listForBundle(
+            this.ws.host,
+            this.remoteRoot()
+        )) {
             const liveness = await checkLiveness(this.ws.apiClient, entry);
             if (liveness === "lost") {
                 await this.cache.delete(entry);

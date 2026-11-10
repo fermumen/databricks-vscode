@@ -20,8 +20,8 @@ state between snippets.
 _Avoid_: context (except when talking about the underlying API), REPL, kernel
 
 **Session name**:
-The short label (default `default`) that identifies a session within one workspace
-host and cluster.
+The short label (default `default`) that identifies a session within one bundle and
+cluster.
 _Avoid_: context id, session id
 
 **Snippet**:

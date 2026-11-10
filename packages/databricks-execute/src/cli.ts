@@ -60,10 +60,21 @@ async function main() {
         return;
     }
 
-    const out = new Output(argv.includes("--json"));
+    // Only flags before `--` are ours; later args belong to the script. This
+    // early guess is only used if parsing fails; afterwards the parsed
+    // option decides.
+    const delimiterIndex = argv.indexOf("--");
+    const out = new Output(
+        (delimiterIndex === -1 ? argv : argv.slice(0, delimiterIndex)).includes(
+            "--json"
+        )
+    );
     let parsed: ParsedArgs | undefined;
     try {
         parsed = parseCliArgs(argv);
+        if (parsed.command !== "help") {
+            out.json = parsed.json;
+        }
         if (parsed.command === "help") {
             // eslint-disable-next-line no-console
             console.log(HELP_TEXT);

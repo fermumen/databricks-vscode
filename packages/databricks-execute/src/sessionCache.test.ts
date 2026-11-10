@@ -23,6 +23,7 @@ async function withCache(
 const entry = {
     host: "https://adb-1.azuredatabricks.net",
     clusterId: "0123-456789-abcdef",
+    bundleRoot: "/Workspace/Users/me/.bundle/a/dev/files",
     name: "default",
     contextId: "ctx-1",
     createdAt: "2026-01-01T00:00:00.000Z",
@@ -35,7 +36,7 @@ test("normalizeHostKey ignores scheme, case and trailing slashes", () => {
     );
 });
 
-test("SessionCache stores entries by host, cluster and name", async () => {
+test("SessionCache stores entries by host, cluster, bundle and name", async () => {
     await withCache(async (cache) => {
         assert.equal(await cache.get(entry), undefined);
 
@@ -51,6 +52,20 @@ test("SessionCache stores entries by host, cluster and name", async () => {
             host: "https://another.cloud.databricks.com",
             contextId: "ctx-4",
         });
+        await cache.set({
+            ...entry,
+            bundleRoot: "/Workspace/Users/me/.bundle/b/dev/files",
+            contextId: "ctx-6",
+        });
+        assert.equal(
+            (
+                await cache.get({
+                    ...entry,
+                    bundleRoot: "/Workspace/Users/me/.bundle/b/dev/files",
+                })
+            )?.contextId,
+            "ctx-6"
+        );
 
         assert.equal(
             (await cache.get({...entry, host: "adb-1.azuredatabricks.net/"}))
@@ -62,7 +77,7 @@ test("SessionCache stores entries by host, cluster and name", async () => {
             "ctx-2"
         );
         assert.deepEqual(
-            (await cache.listForHost(entry.host))
+            (await cache.listForBundle(entry.host, entry.bundleRoot))
                 .map((e) => e.contextId)
                 .sort(),
             ["ctx-1", "ctx-2", "ctx-3"]
@@ -73,7 +88,10 @@ test("SessionCache stores entries by host, cluster and name", async () => {
 
         await cache.delete(entry);
         assert.equal(await cache.get(entry), undefined);
-        assert.equal((await cache.listForHost(entry.host)).length, 2);
+        assert.equal(
+            (await cache.listForBundle(entry.host, entry.bundleRoot)).length,
+            2
+        );
     });
 });
 

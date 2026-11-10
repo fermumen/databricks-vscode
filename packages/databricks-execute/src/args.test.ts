@@ -37,6 +37,11 @@ test("run parses widgets, timeout, serverless and script args", () => {
     assert.equal(parsed.timeoutSeconds, 60);
     assert.equal(parsed.serverless, true);
     assert.deepEqual(parsed.scriptArgs, ["--help", "-h"]);
+
+    const scriptJson = parseCliArgs(["job.py", "--", "--json"]);
+    assert.ok(scriptJson.command === "run");
+    assert.equal(scriptJson.json, false);
+    assert.deepEqual(scriptJson.scriptArgs, ["--json"]);
 });
 
 test("help is only detected before --", () => {

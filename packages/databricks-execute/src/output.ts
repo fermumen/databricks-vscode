@@ -38,7 +38,7 @@ export class Output {
     readonly captured = {stdout: "", stderr: ""};
 
     constructor(
-        readonly json: boolean,
+        public json: boolean,
         private readonly stderrIsTty: boolean = Boolean(process.stderr.isTTY)
     ) {}
 

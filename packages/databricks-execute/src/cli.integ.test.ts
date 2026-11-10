@@ -448,9 +448,10 @@ test(
                 JSON.stringify({
                     version: 1,
                     sessions: {
-                        [`${hostKey} ${clusterId} stale`]: {
+                        [`${hostKey} ${clusterId} ${rootPath}/files stale`]: {
                             host: hostKey,
                             clusterId,
+                            bundleRoot: `${rootPath}/files`,
                             name: "stale",
                             contextId: "1234567890123456789",
                             createdAt: new Date().toISOString(),

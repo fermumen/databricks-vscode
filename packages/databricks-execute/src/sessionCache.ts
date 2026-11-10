@@ -6,7 +6,17 @@ import process from "node:process";
 
 import {normalizeHost} from "./core";
 
-export type SessionKey = {host: string; clusterId: string; name: string};
+/**
+ * A session belongs to one bundle on one cluster: `bundleRoot` is the
+ * bundle's /Workspace-prefixed remote root, so two bundles sharing a cluster
+ * never reuse each other's context, sys.path or cwd.
+ */
+export type SessionKey = {
+    host: string;
+    clusterId: string;
+    bundleRoot: string;
+    name: string;
+};
 
 export type SessionEntry = SessionKey & {
     contextId: string;
@@ -20,7 +30,12 @@ export function normalizeHostKey(host: string): string {
 }
 
 function keyOf(key: SessionKey): string {
-    return [normalizeHostKey(key.host), key.clusterId, key.name].join(" ");
+    return [
+        normalizeHostKey(key.host),
+        key.clusterId,
+        key.bundleRoot,
+        key.name,
+    ].join(" ");
 }
 
 /**
@@ -81,10 +96,13 @@ export class SessionCache {
         }
     }
 
-    async listForHost(host: string): Promise<SessionEntry[]> {
+    async listForBundle(
+        host: string,
+        bundleRoot: string
+    ): Promise<SessionEntry[]> {
         const hostKey = normalizeHostKey(host);
         return Object.values((await this.read()).sessions).filter(
-            (e) => e.host === hostKey
+            (e) => e.host === hostKey && e.bundleRoot === bundleRoot
         );
     }
 }

@@ -117,7 +117,7 @@ databricks-execute session stop
 databricks-execute session list
 ```
 
--   `-s <name>` picks a session; the default name is `default`. A session is identified by the workspace host, the cluster and its name.
+-   `-s <name>` picks a session; the default name is `default`. A session belongs to one bundle on one cluster, so two bundles sharing a cluster never share a session. `list` shows the current bundle's sessions.
 -   `create` starts a stopped cluster (unless you pass `--no-start-cluster`), syncs the bundle, and creates the context with the bundle's remote root on `sys.path` and as the working directory. If the session already exists, `create` prints it and exits 0; `--force` replaces it.
 -   `exec` sends the snippet as-is. There is no file setup: no `sys.argv` or environment changes. Printed output comes back on stdout. `exec` never starts a cluster.
 -   `exec --sync` runs `bundle sync` first and unloads cached bundle modules, so edited modules are re-imported. Without `--sync`, nothing is synced.
